@@ -119,7 +119,8 @@ pub fn run_rustc() -> ExitCode {
             let suffix = match crate_type {
                 Some("lib" | "rlib") => "lib",
                 Some("bin") => "bin",
-                _ => "bin", // proc-macro, cdylib, etc. — treat as bin
+                Some("cdylib") => "cdylib",
+                _ => "bin", // proc-macro, dylib, etc. — treat as bin
             };
 
             std::fs::write(

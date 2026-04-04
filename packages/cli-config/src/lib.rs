@@ -102,20 +102,40 @@ macro_rules! read_env_config {
 ///
 /// For reference, the devserver typically lives on `127.0.0.1:8080` and serves the devserver websocket
 /// on `127.0.0.1:8080/_dioxus`.
+///
+/// Address resolution uses a three-tier fallback so that cdylib targets work without the CLI
+/// controlling the host process:
+/// 1. Runtime env vars (`DIOXUS_DEVSERVER_IP` / `DIOXUS_DEVSERVER_PORT`) — highest priority,
+///    allows the user to override by exporting these before launching their host process.
+/// 2. Compile-time baked values (`option_env!`) — set by the CLI during `dx serve` so the address
+///    is embedded in the cdylib even when the host process doesn't inherit the CLI's env.
+/// 3. Default `127.0.0.1:8080` — works for local development with a default CLI setup.
 pub fn devserver_raw_addr() -> Option<SocketAddr> {
-    let port = std::env::var(DEVSERVER_PORT_ENV).ok();
-
     if cfg!(target_os = "android") {
-        // Since `adb reverse` is used for Android, the 127.0.0.1 will always be
-        // the correct IP address.
-        let port = port.unwrap_or("8080".to_string());
+        // Since `adb reverse` is used for Android, 127.0.0.1 is always correct.
+        let port = std::env::var(DEVSERVER_PORT_ENV)
+            .ok()
+            .or_else(|| option_env!("DIOXUS_DEVSERVER_PORT").map(ToString::to_string))
+            .unwrap_or_else(|| "8080".to_string());
         return Some(format!("127.0.0.1:{}", port).parse().unwrap());
     }
 
-    let port = port?;
-    let ip = std::env::var(DEVSERVER_IP_ENV).ok()?;
+    // Tier 1: runtime env vars
+    let runtime_port = std::env::var(DEVSERVER_PORT_ENV).ok();
+    let runtime_ip = std::env::var(DEVSERVER_IP_ENV).ok();
+    if let (Some(port), Some(ip)) = (runtime_port, runtime_ip) {
+        return format!("{}:{}", ip, port).parse().ok();
+    }
 
-    format!("{}:{}", ip, port).parse().ok()
+    // Tier 2: compile-time baked values (set by `dx serve` during cargo build)
+    let baked_port = option_env!("DIOXUS_DEVSERVER_PORT");
+    let baked_ip = option_env!("DIOXUS_DEVSERVER_IP");
+    if let (Some(port), Some(ip)) = (baked_port, baked_ip) {
+        return format!("{}:{}", ip, port).parse().ok();
+    }
+
+    // Tier 3: default for local development
+    Some("127.0.0.1:8080".parse().unwrap())
 }
 
 /// Get the address of the devserver for use over a websocket
@@ -333,4 +353,44 @@ pub fn build_id() -> u64 {
 /// The product name of the bundled application.
 pub fn product_name() -> Option<String> {
     read_env_config!("DIOXUS_PRODUCT_NAME")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests manipulate env vars and must not run in parallel.
+    // Run with: cargo test -p dioxus-cli-config -- --test-threads=1
+
+    #[test]
+    fn devserver_addr_runtime_env_wins() {
+        std::env::set_var(DEVSERVER_IP_ENV, "192.168.1.100");
+        std::env::set_var(DEVSERVER_PORT_ENV, "9999");
+        let addr = devserver_raw_addr().unwrap();
+        std::env::remove_var(DEVSERVER_IP_ENV);
+        std::env::remove_var(DEVSERVER_PORT_ENV);
+        assert_eq!(addr.to_string(), "192.168.1.100:9999");
+    }
+
+    #[test]
+    fn devserver_addr_default_fallback() {
+        std::env::remove_var(DEVSERVER_IP_ENV);
+        std::env::remove_var(DEVSERVER_PORT_ENV);
+        // Compile-time option_env! values won't be set in a plain `cargo test`, so
+        // this exercises the tier-3 default (127.0.0.1:8080).
+        let addr = devserver_raw_addr();
+        // Either the baked compile-time value or the default — either way, non-None.
+        assert!(addr.is_some());
+    }
+
+    #[test]
+    fn devserver_ws_endpoint_includes_scheme() {
+        std::env::set_var(DEVSERVER_IP_ENV, "127.0.0.1");
+        std::env::set_var(DEVSERVER_PORT_ENV, "8080");
+        let ep = devserver_ws_endpoint().unwrap();
+        std::env::remove_var(DEVSERVER_IP_ENV);
+        std::env::remove_var(DEVSERVER_PORT_ENV);
+        assert!(ep.starts_with("ws://"), "expected ws:// prefix, got {ep}");
+        assert!(ep.ends_with("/_dioxus"), "expected /_dioxus suffix, got {ep}");
+    }
 }

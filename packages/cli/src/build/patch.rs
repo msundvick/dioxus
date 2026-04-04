@@ -403,6 +403,7 @@ pub fn create_native_jump_table(
     patch: &Path,
     triple: &Triple,
     cache: &HotpatchModuleCache,
+    is_cdylib: bool,
 ) -> Result<JumpTable> {
     let old_name_to_addr = &cache.symbol_table;
     let obj2_bytes = std::fs::read(patch)?;
@@ -422,15 +423,15 @@ pub fn create_native_jump_table(
         }
     }
 
-    let sentinel = main_sentinel(triple);
+    let sentinel = aslr_sentinel(triple, is_cdylib);
     let new_base_address = new_name_to_addr
         .get(sentinel)
         .cloned()
-        .context("failed to find 'main' symbol in base - are deubg symbols enabled?")?;
+        .context("failed to find ASLR sentinel symbol in patch - are debug symbols enabled?")?;
     let aslr_reference = old_name_to_addr
         .get(sentinel)
         .map(|s| s.address)
-        .context("failed to find 'main' symbol in original module - are debug symbols enabled?")?;
+        .context("failed to find ASLR sentinel symbol in original module - are debug symbols enabled?")?;
 
     Ok(JumpTable {
         lib: patch.to_path_buf(),
@@ -838,6 +839,7 @@ pub fn create_undefined_symbol_stub(
     incrementals: &[PathBuf],
     triple: &Triple,
     aslr_reference: u64,
+    is_cdylib: bool,
 ) -> Result<Vec<u8>> {
     let sorted: Vec<_> = incrementals.iter().sorted().collect();
 
@@ -856,6 +858,14 @@ pub fn create_undefined_symbol_stub(
             }
         }
     }
+    // For cdylib thin patches the ASLR sentinel lives in the `subsecond` dependency and is
+    // never part of the changed .o files, so it won't appear in the patch's symbol table.
+    // Force-include it here so create_native_jump_table can always find it in the patch.
+    if is_cdylib {
+        let sentinel = aslr_sentinel(triple, true).to_string();
+        undefined_symbols.insert(sentinel);
+    }
+
     let undefined_symbols: Vec<_> = undefined_symbols
         .difference(&defined_symbols)
         .cloned()
@@ -915,16 +925,17 @@ pub fn create_undefined_symbol_stub(
     }
 
     // Get the offset from the main module and adjust the addresses by the slide;
+    let sentinel = aslr_sentinel(triple, is_cdylib);
     let aslr_ref_address = cache
         .symbol_table
-        .get(main_sentinel(triple))
-        .context("failed to find '_main' symbol in patch")?
+        .get(sentinel)
+        .with_context(|| format!("failed to find ASLR sentinel symbol '{sentinel}' in patch"))?
         .address;
 
     if aslr_reference < aslr_ref_address {
         return Err(PatchError::InvalidModule(
             format!(
-            "ASLR reference is less than the main module's address - is there a `main`?. {aslr_reference:x} < {aslr_ref_address:x}" )
+            "ASLR reference is less than the module's base address. {aslr_reference:x} < {aslr_ref_address:x}" )
         ));
     }
 
@@ -1583,17 +1594,61 @@ fn parse_module_with_ids(bindgened: &[u8]) -> Result<ParsedModule<'_>> {
     })
 }
 
-/// Get the main sentinel symbol for the given target triple
+/// Get the ASLR sentinel symbol name for the given target triple and crate type.
 ///
-/// We need to special case darwin since `main` is the entrypoint but `_main` is the actual symbol.
-/// The entrypoint ends up outside the text section, seemingly, and breaks our aslr detection.
-fn main_sentinel(triple: &Triple) -> &'static str {
+/// For cdylib targets there is no `main`, so we use `__subsecond_aslr_reference` which is
+/// exported by the subsecond crate itself. For bin targets we fall back to `main` (or `_main`
+/// on Darwin).
+fn aslr_sentinel(triple: &Triple, is_cdylib: bool) -> &'static str {
+    if is_cdylib {
+        return "__subsecond_aslr_reference";
+    }
     match triple.operating_system {
         // The symbol in the symtab is called "_main" but in the dysymtab it is called "main"
         OperatingSystem::MacOSX(_) | OperatingSystem::Darwin(_) | OperatingSystem::IOS(_) => {
             "_main"
         }
-
         _ => "main",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn triple(s: &str) -> Triple {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn sentinel_bin_linux() {
+        assert_eq!(aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), false), "main");
+    }
+
+    #[test]
+    fn sentinel_bin_mac() {
+        assert_eq!(aslr_sentinel(&triple("aarch64-apple-darwin"), false), "_main");
+    }
+
+    #[test]
+    fn sentinel_bin_windows() {
+        assert_eq!(aslr_sentinel(&triple("x86_64-pc-windows-msvc"), false), "main");
+    }
+
+    #[test]
+    fn sentinel_cdylib_ignores_platform() {
+        assert_eq!(
+            aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), true),
+            "__subsecond_aslr_reference"
+        );
+        assert_eq!(
+            aslr_sentinel(&triple("aarch64-apple-darwin"), true),
+            "__subsecond_aslr_reference",
+            "cdylib sentinel must not use _main even on Darwin"
+        );
+        assert_eq!(
+            aslr_sentinel(&triple("x86_64-pc-windows-msvc"), true),
+            "__subsecond_aslr_reference"
+        );
     }
 }

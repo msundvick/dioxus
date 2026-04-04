@@ -41,6 +41,13 @@ pub(crate) struct TargetArgs {
     #[clap(long, help_heading = HELP_HEADING)]
     pub(crate) bin: Option<String>,
 
+    /// Build the library target (cdylib) instead of a binary [default: false]
+    ///
+    /// Use this when your crate is a `cdylib` and you want hot reloading via `dx serve`.
+    #[clap(long, help_heading = HELP_HEADING)]
+    #[serde(default)]
+    pub(crate) lib: bool,
+
     /// Build a specific example [default: ""]
     #[clap(long, help_heading = HELP_HEADING)]
     pub(crate) example: Option<String>,

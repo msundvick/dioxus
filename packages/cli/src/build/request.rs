@@ -502,9 +502,12 @@ impl BuildRequest {
     pub(crate) async fn new(args: &TargetArgs, workspace: Arc<Workspace>) -> Result<Self> {
         let crate_package = workspace.find_main_package(args.package.clone())?;
 
-        let target_kind = match args.example.is_some() {
-            true => TargetKind::Example,
-            false => TargetKind::Bin,
+        let target_kind = if args.example.is_some() {
+            TargetKind::Example
+        } else if args.lib {
+            TargetKind::CDyLib
+        } else {
+            TargetKind::Bin
         };
 
         let main_package = &workspace.krates[crate_package];
@@ -1318,10 +1321,23 @@ impl BuildRequest {
                     ctx.status_build_progress(
                         units_compiled,
                         crate_count,
-                        artifact.target.name,
+                        artifact.target.name.clone(),
                         artifact.fresh,
                     );
-                    output_location = artifact.executable.map(Into::into);
+                    // For bin/example targets, cargo sets `executable`. For cdylib targets
+                    // `executable` is None; the shared library path is in `filenames`.
+                    output_location = artifact.executable.map(Into::into).or_else(|| {
+                        if self.is_cdylib() && artifact.target.name == self.executable_name() {
+                            artifact.filenames.into_iter().find(|f| {
+                                matches!(
+                                    f.extension(),
+                                    Some("so") | Some("dylib") | Some("dll")
+                                )
+                            }).map(Into::into)
+                        } else {
+                            None
+                        }
+                    });
                 }
                 // todo: this can occasionally swallow errors, so we should figure out what exactly is going wrong
                 //       since that is a really bad user experience.
@@ -1376,9 +1392,9 @@ impl BuildRequest {
             }
         }
 
-        // Collect the linker args and attach them to the tip crate's bin entry
+        // Collect the linker args and attach them to the tip crate's entry
         let tip_crate_name = self.tip_crate_name();
-        let tip_bin_key = format!("{tip_crate_name}.bin");
+        let tip_bin_key = format!("{tip_crate_name}.{}", self.tip_suffix());
         if let Some(tip_args) = workspace_rustc_args.get_mut(&tip_bin_key) {
             tip_args.link_args = std::fs::read_to_string(self.link_args_file())
                 .context("Failed to read link args from file")?
@@ -2114,10 +2130,10 @@ impl BuildRequest {
     ) -> Result<()> {
         let framework_dir = self.frameworks_folder();
 
-        // We use the rustc for the tip crate `main.rs` because that's where the linking happens
+        // We use the rustc for the tip crate because that's where the linking happens
         let direct_rustc = artifacts
             .workspace_rustc_args
-            .get(&format!("{}.bin", self.tip_crate_name()))
+            .get(&format!("{}.{}", self.tip_crate_name(), self.tip_suffix()))
             .cloned()
             .unwrap_or_default();
 
@@ -2361,14 +2377,14 @@ impl BuildRequest {
 
         // Cache tip crate objects from the FRESH linker args (from the just-completed
         // thin build, not the stale ones from ctx.mode's fat build).
-        let tip_bin_key = format!("{tip_name}.bin");
+        let tip_bin_key = format!("{tip_name}.{}", self.tip_suffix());
         let args = artifacts
             .workspace_rustc_args
             .get(&tip_bin_key)
             .cloned()
             .with_context(|| {
                 format!(
-                    "Missing rustc args for tip bin target '{tip_bin_key}' \
+                    "Missing rustc args for tip target '{tip_bin_key}' \
                      (available keys: {:?})",
                     artifacts.workspace_rustc_args.keys().collect::<Vec<_>>()
                 )
@@ -2492,6 +2508,7 @@ impl BuildRequest {
                 &object_files,
                 &self.triple,
                 aslr_reference,
+                self.is_cdylib(),
             )
             .expect("failed to resolve patch symbols");
 
@@ -3183,7 +3200,7 @@ impl BuildRequest {
             _ if triple.architecture == Architecture::Wasm32 => {
                 create_wasm_jump_table(patch, cache)?
             }
-            _ => create_native_jump_table(patch, triple, cache)?,
+            _ => create_native_jump_table(patch, triple, cache, self.is_cdylib())?,
         };
 
         // root_dir: &Path,
@@ -3321,7 +3338,7 @@ impl BuildRequest {
                 ..
             } => {
                 let rustc_args = workspace_rustc_args
-                    .get(&format!("{}.bin", self.tip_crate_name()))
+                    .get(&format!("{}.{}", self.tip_crate_name(), self.tip_suffix()))
                     .context("Missing rustc args for tip crate")?;
 
                 let mut cmd = Command::new("rustc");
@@ -3438,14 +3455,26 @@ impl BuildRequest {
         cargo_args.push(String::from("-p"));
         cargo_args.push(self.package.clone());
 
-        // Set the executable
+        // Set the executable target. `--lib` is a bare flag (no name argument); `--bin` and
+        // `--example` take a name. The package is already set via `-p` above.
         match self.executable_type() {
-            TargetKind::Bin => cargo_args.push("--bin".to_string()),
-            TargetKind::Lib => cargo_args.push("--lib".to_string()),
-            TargetKind::Example => cargo_args.push("--example".to_string()),
-            _ => {}
+            TargetKind::Bin => {
+                cargo_args.push("--bin".to_string());
+                cargo_args.push(self.executable_name().to_string());
+            }
+            TargetKind::Lib | TargetKind::CDyLib => {
+                cargo_args.push("--lib".to_string());
+                // No name argument — `--lib` selects the lib target of the package already
+                // specified by `-p`.
+            }
+            TargetKind::Example => {
+                cargo_args.push("--example".to_string());
+                cargo_args.push(self.executable_name().to_string());
+            }
+            _ => {
+                cargo_args.push(self.executable_name().to_string());
+            }
         };
-        cargo_args.push(self.executable_name().to_string());
 
         // Set offline/locked/frozen
         let lock_opts = crate::verbosity_or_default();
@@ -4473,6 +4502,20 @@ impl BuildRequest {
     /// The crate name that rustc uses for the tip crate (hyphens replaced with underscores).
     fn tip_crate_name(&self) -> String {
         self.main_target.replace('-', "_")
+    }
+
+    /// The rustcwrapper suffix used for the tip crate: `"cdylib"` for cdylib targets, `"bin"` otherwise.
+    fn tip_suffix(&self) -> &'static str {
+        if matches!(self.executable_type(), TargetKind::CDyLib) {
+            "cdylib"
+        } else {
+            "bin"
+        }
+    }
+
+    /// Returns true when the tip crate is a cdylib.
+    pub(crate) fn is_cdylib(&self) -> bool {
+        matches!(self.executable_type(), TargetKind::CDyLib)
     }
 
     fn link_err_file(&self) -> PathBuf {

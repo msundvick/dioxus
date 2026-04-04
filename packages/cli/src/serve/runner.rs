@@ -606,6 +606,32 @@ impl AppServer {
                 .duration_since(artifacts.time_start)
                 .unwrap();
 
+            if self.client.build.is_cdylib() {
+                // For cdylib targets the CLI doesn't launch a host process. Print the devserver
+                // address so the user can export the env vars before loading the library.
+                let ip = self.devserver_bind_ip;
+                let port = self.devserver_port;
+                let lib_path = artifacts.exe.display();
+                if self.client.builds_opened == 0 {
+                    tracing::info!(
+                        "cdylib built in {GLOW_STYLE}{}{GLOW_STYLE:#}: {lib_path}. Load it from your host process.",
+                        format_duration_ms(time_taken)
+                    );
+                    tracing::info!(
+                        "Export these env vars before loading the library:\n  \
+                        export DIOXUS_DEVSERVER_IP={ip}\n  \
+                        export DIOXUS_DEVSERVER_PORT={port}"
+                    );
+                } else {
+                    tracing::info!(
+                        "cdylib rebuilt in {GLOW_STYLE}{}{GLOW_STYLE:#}: {lib_path}",
+                        format_duration_ms(time_taken)
+                    );
+                }
+                self.client.builds_opened += 1;
+                return Ok(());
+            }
+
             if self.client.builds_opened == 0 {
                 tracing::info!(
                     "Build completed successfully in {GLOW_STYLE}{}{GLOW_STYLE:#}, launching app! 💫",

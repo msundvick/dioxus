@@ -515,20 +515,23 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
         // cross-platform version of `__mh_execute_header` on macOS that we can use to base the executable.
         let old_offset = aslr_reference() - table.aslr_reference as usize;
 
-        // Use the `main` symbol as a sentinel for the loaded library. Might want to move away
-        // from this at some point, or make it configurable
+        // Use the sentinel symbol to locate the patch dylib's base. We prefer
+        // `__subsecond_aslr_reference` (exported by subsecond itself, works for both bin and
+        // cdylib targets) and fall back to `main` for bin targets.
         let new_offset = unsafe {
             // Leak the library. dlopen is basically a no-op on many platforms and if we even try to drop it,
             // some code might be called (ie drop) that results in really bad crashes (restart your computer...)
-            //
-            // This code currently assumes "main" always makes it to the export list (which it should)
-            // and requires coordination from the CLI to export it.
-            lib.get::<*const ()>(b"main")
+            let sentinel_ptr = lib
+                .get::<*const ()>(b"__subsecond_aslr_reference\0")
                 .ok()
-                .unwrap()
-                .try_as_raw_ptr()
-                .unwrap()
-                .wrapping_byte_sub(table.new_base_address as usize) as usize
+                .and_then(|s| s.try_as_raw_ptr())
+                .or_else(|| {
+                    lib.get::<*const ()>(b"main\0")
+                        .ok()
+                        .and_then(|s| s.try_as_raw_ptr())
+                })
+                .unwrap();
+            sentinel_ptr.wrapping_byte_sub(table.new_base_address as usize) as usize
         };
 
         // Modify the jump table to be relative to the base address of the loaded library
@@ -697,14 +700,25 @@ pub enum PatchError {
     AndroidMemfd(String),
 }
 
-/// This function returns the address of the main function in the current executable. This is used as
-/// an anchor to reference the current executable's base address.
+#[macro_export]
+macro_rules! hotpatch_anchor {
+    () => {
+        #[used]
+        #[no_mangle]
+        pub static __subsecond_aslr_reference: u8 = 0;
+    };
+}
+
+/// Returns the runtime address of `__subsecond_aslr_reference`.
 ///
-/// The point here being that we have a stable address both at runtime and compile time, making it
-/// possible to calculate the ASLR offset from within the process to correct the jump table.
+/// This is the anchor used to compute the ASLR slide: the CLI reads the symbol's
+/// compile-time address from the binary's symbol table, and this function returns its
+/// actual loaded address. The difference is the ASLR offset applied to every address
+/// in the jump table.
 ///
-/// It should only be called from the main executable *first* and not from a shared library since it
-/// self-initializes.
+/// Taking the function pointer directly (rather than going through `dlsym`) works in
+/// all contexts — bin, cdylib, and test binaries — without requiring the symbol to be
+/// exported to the dynamic symbol table.
 #[doc(hidden)]
 pub fn aslr_reference() -> usize {
     #[cfg(target_family = "wasm")]
@@ -713,32 +727,68 @@ pub fn aslr_reference() -> usize {
     #[cfg(not(target_family = "wasm"))]
     unsafe {
         use std::ffi::c_void;
+        static mut SENTINEL_PTR: *mut c_void = std::ptr::null_mut();
 
-        // The first call to this function should occur in the
-        static mut MAIN_PTR: *mut c_void = std::ptr::null_mut();
-
-        if MAIN_PTR.is_null() {
+        if SENTINEL_PTR.is_null() {
             #[cfg(unix)]
             {
-                MAIN_PTR = libc::dlsym(libc::RTLD_DEFAULT, c"main".as_ptr() as _);
+                // 1. Get our specific module's info (works for both bin and cdylib)
+                let mut info: libc::Dl_info = std::mem::zeroed();
+                if libc::dladdr(aslr_reference as *const c_void, &mut info) != 0
+                    && !info.dli_fname.is_null()
+                {
+                    // 2. Grab the handle to our already-loaded module
+                    let handle = libc::dlopen(info.dli_fname, libc::RTLD_LAZY | libc::RTLD_NOLOAD);
+                    if !handle.is_null() {
+                        // 3. Search for the optional macro anchor first
+                        let ptr = libc::dlsym(handle, c"__subsecond_aslr_reference".as_ptr() as _);
+                        if !ptr.is_null() {
+                            SENTINEL_PTR = ptr;
+                        } else {
+                            // 4. Fallback to main
+                            SENTINEL_PTR = libc::dlsym(handle, c"main".as_ptr() as _);
+                        }
+                    }
+                }
             }
 
             #[cfg(windows)]
             {
                 extern "system" {
-                    fn GetModuleHandleA(lpModuleName: *const i8) -> *mut std::ffi::c_void;
-                    fn GetProcAddress(
-                        hModule: *mut std::ffi::c_void,
-                        lpProcName: *const i8,
-                    ) -> *mut std::ffi::c_void;
+                    fn GetModuleHandleExW(
+                        dwFlags: u32,
+                        lpModuleName: *const u16,
+                        phModule: *mut *mut c_void,
+                    ) -> i32;
+                    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const i8) -> *mut c_void;
                 }
 
-                MAIN_PTR =
-                    GetProcAddress(GetModuleHandleA(std::ptr::null()), c"main".as_ptr() as _) as _;
+                let mut module_handle: *mut c_void = std::ptr::null_mut();
+
+                GetModuleHandleExW(
+                    0x00000004 | 0x00000002, // FROM_ADDRESS | UNCHANGED_REFCOUNT
+                    aslr_reference as *const c_void as *const u16,
+                    &raw mut module_handle,
+                );
+
+                if !module_handle.is_null() {
+                    let ptr =
+                        GetProcAddress(module_handle, c"__subsecond_aslr_reference".as_ptr() as _);
+                    if !ptr.is_null() {
+                        SENTINEL_PTR = ptr;
+                    } else {
+                        SENTINEL_PTR = GetProcAddress(module_handle, c"main".as_ptr() as _);
+                    }
+                }
+            }
+
+            // Final fallback if OS APIs fail entirely
+            if SENTINEL_PTR.is_null() {
+                SENTINEL_PTR = 0 as *mut c_void;
             }
         }
 
-        MAIN_PTR as usize
+        SENTINEL_PTR as usize
     }
 }
 

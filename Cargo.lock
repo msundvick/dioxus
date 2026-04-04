@@ -3295,6 +3295,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdylib-autoconnect"
+version = "0.1.0"
+dependencies = [
+ "ctor",
+ "dioxus-devtools",
+]
+
+[[package]]
+name = "cdylib-autoconnect-host"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "subsecond",
+]
+
+[[package]]
+name = "cdylib-basic"
+version = "0.1.0"
+dependencies = [
+ "dioxus-devtools",
+]
+
+[[package]]
+name = "cdylib-basic-host"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "subsecond",
+]
+
+[[package]]
+name = "cdylib-tls"
+version = "0.1.0"
+dependencies = [
+ "dioxus-devtools",
+]
+
+[[package]]
+name = "cdylib-tls-host"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "subsecond",
+]
+
+[[package]]
 name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4347,6 +4393,16 @@ name = "cssparser-macros"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
 dependencies = [
  "quote",
  "syn 2.0.117",

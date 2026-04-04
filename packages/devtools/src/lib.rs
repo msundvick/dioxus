@@ -78,6 +78,7 @@ pub fn connect_subsecond() {
         if let DevserverMsg::HotReload(hot_reload_msg) = msg {
             if let Some(jumptable) = hot_reload_msg.jump_table {
                 if hot_reload_msg.for_pid == Some(std::process::id()) {
+                    println!("Applying patch");
                     unsafe { subsecond::apply_patch(jumptable).unwrap() };
                 }
             }
