@@ -428,10 +428,9 @@ pub fn create_native_jump_table(
         .get(sentinel)
         .cloned()
         .context("failed to find ASLR sentinel symbol in patch - are debug symbols enabled?")?;
-    let aslr_reference = old_name_to_addr
-        .get(sentinel)
-        .map(|s| s.address)
-        .context("failed to find ASLR sentinel symbol in original module - are debug symbols enabled?")?;
+    let aslr_reference = old_name_to_addr.get(sentinel).map(|s| s.address).context(
+        "failed to find ASLR sentinel symbol in original module - are debug symbols enabled?",
+    )?;
 
     Ok(JumpTable {
         lib: patch.to_path_buf(),
@@ -1596,12 +1595,12 @@ fn parse_module_with_ids(bindgened: &[u8]) -> Result<ParsedModule<'_>> {
 
 /// Get the ASLR sentinel symbol name for the given target triple and crate type.
 ///
-/// For cdylib targets there is no `main`, so we use `__subsecond_aslr_reference` which is
+/// For cdylib targets there is no `main`, so we use `__SUBSECOND_ASLR_REFERENCE` which is
 /// exported by the subsecond crate itself. For bin targets we fall back to `main` (or `_main`
 /// on Darwin).
 fn aslr_sentinel(triple: &Triple, is_cdylib: bool) -> &'static str {
     if is_cdylib {
-        return "__subsecond_aslr_reference";
+        return "__SUBSECOND_ASLR_REFERENCE";
     }
     match triple.operating_system {
         // The symbol in the symtab is called "_main" but in the dysymtab it is called "main"
@@ -1622,33 +1621,42 @@ mod tests {
 
     #[test]
     fn sentinel_bin_linux() {
-        assert_eq!(aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), false), "main");
+        assert_eq!(
+            aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), false),
+            "main"
+        );
     }
 
     #[test]
     fn sentinel_bin_mac() {
-        assert_eq!(aslr_sentinel(&triple("aarch64-apple-darwin"), false), "_main");
+        assert_eq!(
+            aslr_sentinel(&triple("aarch64-apple-darwin"), false),
+            "_main"
+        );
     }
 
     #[test]
     fn sentinel_bin_windows() {
-        assert_eq!(aslr_sentinel(&triple("x86_64-pc-windows-msvc"), false), "main");
+        assert_eq!(
+            aslr_sentinel(&triple("x86_64-pc-windows-msvc"), false),
+            "main"
+        );
     }
 
     #[test]
     fn sentinel_cdylib_ignores_platform() {
         assert_eq!(
             aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), true),
-            "__subsecond_aslr_reference"
+            "__SUBSECOND_ASLR_REFERENCE"
         );
         assert_eq!(
             aslr_sentinel(&triple("aarch64-apple-darwin"), true),
-            "__subsecond_aslr_reference",
+            "__SUBSECOND_ASLR_REFERENCE",
             "cdylib sentinel must not use _main even on Darwin"
         );
         assert_eq!(
             aslr_sentinel(&triple("x86_64-pc-windows-msvc"), true),
-            "__subsecond_aslr_reference"
+            "__SUBSECOND_ASLR_REFERENCE"
         );
     }
 }

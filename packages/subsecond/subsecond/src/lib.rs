@@ -516,13 +516,13 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
         let old_offset = aslr_reference() - table.aslr_reference as usize;
 
         // Use the sentinel symbol to locate the patch dylib's base. We prefer
-        // `__subsecond_aslr_reference` (exported by subsecond itself, works for both bin and
+        // `__SUBSECOND_ASLR_REFERENCE` (exported by subsecond itself, works for both bin and
         // cdylib targets) and fall back to `main` for bin targets.
         let new_offset = unsafe {
             // Leak the library. dlopen is basically a no-op on many platforms and if we even try to drop it,
             // some code might be called (ie drop) that results in really bad crashes (restart your computer...)
             let sentinel_ptr = lib
-                .get::<*const ()>(b"__subsecond_aslr_reference\0")
+                .get::<*const ()>(b"__SUBSECOND_ASLR_REFERENCE\0")
                 .ok()
                 .and_then(|s| s.try_as_raw_ptr())
                 .or_else(|| {
@@ -705,11 +705,11 @@ macro_rules! hotpatch_anchor {
     () => {
         #[used]
         #[no_mangle]
-        pub static __subsecond_aslr_reference: u8 = 0;
+        pub static __SUBSECOND_ASLR_REFERENCE: u8 = 0;
     };
 }
 
-/// Returns the runtime address of `__subsecond_aslr_reference`.
+/// Returns the runtime address of `__SUBSECOND_ASLR_REFERENCE`.
 ///
 /// This is the anchor used to compute the ASLR slide: the CLI reads the symbol's
 /// compile-time address from the binary's symbol table, and this function returns its
@@ -741,7 +741,7 @@ pub fn aslr_reference() -> usize {
                     let handle = libc::dlopen(info.dli_fname, libc::RTLD_LAZY | libc::RTLD_NOLOAD);
                     if !handle.is_null() {
                         // 3. Search for the optional macro anchor first
-                        let ptr = libc::dlsym(handle, c"__subsecond_aslr_reference".as_ptr() as _);
+                        let ptr = libc::dlsym(handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
                         if !ptr.is_null() {
                             SENTINEL_PTR = ptr;
                         } else {
@@ -773,7 +773,7 @@ pub fn aslr_reference() -> usize {
 
                 if !module_handle.is_null() {
                     let ptr =
-                        GetProcAddress(module_handle, c"__subsecond_aslr_reference".as_ptr() as _);
+                        GetProcAddress(module_handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
                     if !ptr.is_null() {
                         SENTINEL_PTR = ptr;
                     } else {
