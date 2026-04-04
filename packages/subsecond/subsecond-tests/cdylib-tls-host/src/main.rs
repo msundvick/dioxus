@@ -24,7 +24,15 @@
 fn main() {
     let cdylib_path = std::env::var("CDYLIB_PATH").unwrap_or_else(|_| {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace = manifest.parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap();
+        let workspace = manifest
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         let lib = if cfg!(target_os = "macos") {
             "libcdylib_tls.dylib"
         } else if cfg!(target_os = "windows") {
@@ -32,7 +40,12 @@ fn main() {
         } else {
             "libcdylib_tls.so"
         };
-        workspace.join("target/debug").join(lib).to_str().unwrap().to_string()
+        workspace
+            .join("target/debug")
+            .join(lib)
+            .to_str()
+            .unwrap()
+            .to_string()
     });
 
     let lib = unsafe { libloading::Library::new(&cdylib_path) }
@@ -50,9 +63,7 @@ fn main() {
     );
 
     loop {
-        subsecond::call(|| {
-            unsafe { tick() };
-        });
+        unsafe { tick() };
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }

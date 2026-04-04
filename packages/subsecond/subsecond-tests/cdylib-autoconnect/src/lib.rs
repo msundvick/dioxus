@@ -1,3 +1,5 @@
+dioxus_devtools::subsecond::hotpatch_anchor!();
+
 /// Library constructor — runs automatically when the cdylib is loaded by any host process.
 ///
 /// This means the host does NOT need to call an explicit `on_load()` function. Just loading
@@ -11,5 +13,5 @@ fn init() {
 /// any explicit init call from the host side.
 #[no_mangle]
 pub extern "C" fn compute() -> i32 {
-    42
+    dioxus_devtools::subsecond::call(|| 5)
 }

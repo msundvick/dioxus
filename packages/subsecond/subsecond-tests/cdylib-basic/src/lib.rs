@@ -16,5 +16,5 @@ pub extern "C" fn get_version() -> u32 {
 }
 
 fn version() -> u32 {
-    1234
+    12
 }

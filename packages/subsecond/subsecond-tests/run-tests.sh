@@ -189,3 +189,15 @@ pass "All automated checks and tests passed."
 if ! $E2E; then
   warn "Run with --e2e to see manual end-to-end test instructions."
 fi
+
+# Test 1 success
+
+# Test 2 fails: TLS is reset on patch
+
+# Test 3 inconclusive; works but dioxus_devtools::connect_subsecond() is called on patch
+
+# Test 4 fails on patch; something in our changes breaks patching
+# 14:48:54 [dev] Thread tokio-rt-worker panicked at packages/cli/src/build/request.rs:2513:14:
+
+#                failed to resolve patch symbols: InvalidModule("ASLR reference is less than the module's base address. 0 < 1852a0") 
+# 14:48:54 [dev] Build failed: Build panicked! JoinError::Panic(Id(42), "failed to resolve patch symbols: InvalidModule(\"ASLR reference is less than the module's base address. 0 < 1852a0\")", ...) 

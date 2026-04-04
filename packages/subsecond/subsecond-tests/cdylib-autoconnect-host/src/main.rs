@@ -24,7 +24,15 @@
 fn main() {
     let cdylib_path = std::env::var("CDYLIB_PATH").unwrap_or_else(|_| {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace = manifest.parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap();
+        let workspace = manifest
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         let lib = if cfg!(target_os = "macos") {
             "libcdylib_autoconnect.dylib"
         } else if cfg!(target_os = "windows") {
@@ -32,7 +40,12 @@ fn main() {
         } else {
             "libcdylib_autoconnect.so"
         };
-        workspace.join("target/debug").join(lib).to_str().unwrap().to_string()
+        workspace
+            .join("target/debug")
+            .join(lib)
+            .to_str()
+            .unwrap()
+            .to_string()
     });
 
     // Loading the library triggers the #[ctor] init, which calls connect_subsecond().
@@ -43,13 +56,13 @@ fn main() {
     let compute: libloading::Symbol<unsafe extern "C" fn() -> i32> =
         unsafe { lib.get(b"compute") }.expect("compute not found");
 
-    println!("Autoconnect host running (no explicit init call). Edit compute() to test hot patching.");
+    println!(
+        "Autoconnect host running (no explicit init call). Edit compute() to test hot patching."
+    );
 
     loop {
-        subsecond::call(|| {
-            let v = unsafe { compute() };
-            println!("compute() = {v}");
-        });
+        let v = unsafe { compute() };
+        println!("compute() = {v}");
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }

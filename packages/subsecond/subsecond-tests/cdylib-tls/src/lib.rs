@@ -1,3 +1,5 @@
+dioxus_devtools::subsecond::hotpatch_anchor!();
+
 use std::cell::Cell;
 
 thread_local! {
@@ -20,9 +22,11 @@ pub extern "C" fn on_load() {
 /// was patched. The counter value must continue increasing, not reset to 0 or 1.
 #[no_mangle]
 pub extern "C" fn tick() {
-    COUNTER.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        println!("tick v1: counter = {v}");
+    dioxus_devtools::subsecond::call(|| {
+        COUNTER.with(|c| {
+            let v = c.get() + 3;
+            c.set(v);
+            println!("tick v1: counter = {v}");
+        });
     });
 }

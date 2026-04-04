@@ -427,9 +427,18 @@ pub fn create_native_jump_table(
     let new_base_address = new_name_to_addr
         .get(sentinel)
         .cloned()
-        .context("failed to find ASLR sentinel symbol in patch - are debug symbols enabled?")?;
+
+        .context(if is_cdylib {
+            "failed to find ASLR sentinel symbol in patch \n- are debug symbols enabled?\n- is dioxus_devtools::subsecond::hotpatch_anchor!(); included?"
+        } else {
+            "failed to find 'main' symbol in patch - are debug symbols enabled?"
+        })?;
     let aslr_reference = old_name_to_addr.get(sentinel).map(|s| s.address).context(
-        "failed to find ASLR sentinel symbol in original module - are debug symbols enabled?",
+       if is_cdylib {
+            "failed to find ASLR sentinel symbol in original module \n- are debug symbols enabled?\n- is dioxus_devtools::subsecond::hotpatch_anchor!(); included?"
+        } else {
+            "failed to find 'main' symbol in original module - are debug symbols enabled?"
+        }
     )?;
 
     Ok(JumpTable {
@@ -928,7 +937,13 @@ pub fn create_undefined_symbol_stub(
     let aslr_ref_address = cache
         .symbol_table
         .get(sentinel)
-        .with_context(|| format!("failed to find ASLR sentinel symbol '{sentinel}' in patch"))?
+        .with_context(|| {
+            if is_cdylib {
+                format!("failed to find ASLR sentinel symbol '{sentinel}' in patch \n- are debug symbols enabled?\n- is dioxus_devtools::subsecond::hotpatch_anchor!(); included?")
+            } else {
+                "failed to find 'main' in patch - are debug symbols enabled?".to_string()
+            }
+        })?
         .address;
 
     if aslr_reference < aslr_ref_address {
