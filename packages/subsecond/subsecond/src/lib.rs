@@ -737,17 +737,23 @@ pub fn aslr_reference() -> usize {
                 if libc::dladdr(aslr_reference as *const c_void, &mut info) != 0
                     && !info.dli_fname.is_null()
                 {
-                    // 2. Grab the handle to our already-loaded module
+                    // 2. Try to grab the handle to our already-loaded module.
+                    //    RTLD_NOLOAD works for shared libraries (cdylib) but returns NULL for
+                    //    executables on Linux — in that case fall back to RTLD_DEFAULT which
+                    //    searches all already-loaded objects including the executable itself.
                     let handle = libc::dlopen(info.dli_fname, libc::RTLD_LAZY | libc::RTLD_NOLOAD);
-                    if !handle.is_null() {
-                        // 3. Search for the optional macro anchor first
-                        let ptr = libc::dlsym(handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
-                        if !ptr.is_null() {
-                            SENTINEL_PTR = ptr;
-                        } else {
-                            // 4. Fallback to main
-                            SENTINEL_PTR = libc::dlsym(handle, c"main".as_ptr() as _);
-                        }
+                    let search_handle = if !handle.is_null() {
+                        handle
+                    } else {
+                        libc::RTLD_DEFAULT
+                    };
+                    // 3. Search for the optional macro anchor first
+                    let ptr = libc::dlsym(search_handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
+                    if !ptr.is_null() {
+                        SENTINEL_PTR = ptr;
+                    } else {
+                        // 4. Fallback to main (for bin targets)
+                        SENTINEL_PTR = libc::dlsym(search_handle, c"main".as_ptr() as _);
                     }
                 }
             }
@@ -782,10 +788,7 @@ pub fn aslr_reference() -> usize {
                 }
             }
 
-            // Final fallback if OS APIs fail entirely
-            if SENTINEL_PTR.is_null() {
-                SENTINEL_PTR = 0 as *mut c_void;
-            }
+            // If the OS APIs all failed, leave SENTINEL_PTR null so the next call retries.
         }
 
         SENTINEL_PTR as usize

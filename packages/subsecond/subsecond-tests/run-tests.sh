@@ -56,6 +56,12 @@ PACKAGES=(
   cdylib-tls-host
   cdylib-autoconnect
   cdylib-autoconnect-host
+  bin-basic
+  bin-dep
+  bin-multi-crate
+  bin-dep-nested
+  bin-dep-middle
+  bin-transitive-dep
   cross-tls-crate
   cross-tls-crate-dylib
   subsecond-tls-harness
@@ -108,7 +114,7 @@ done
 # ─── 4. Host builds ───────────────────────────────────────────────────────────
 section "host binary builds"
 
-for pkg in cdylib-basic-host cdylib-tls-host cdylib-autoconnect-host subsecond-tls-harness; do
+for pkg in cdylib-basic-host cdylib-tls-host cdylib-autoconnect-host bin-basic bin-multi-crate bin-transitive-dep subsecond-tls-harness; do
   if cargo build -p "$pkg" --quiet 2>/dev/null; then
     pass "cargo build $pkg"
   else
@@ -174,7 +180,38 @@ Patch:    edit cdylib-autoconnect/src/lib.rs — change `42` to `99`.
 Expected: output changes to "compute() = 99" without any explicit init call.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TEST 4 — cross-tls (existing bin-target test, unmodified)
+TEST 4 — Basic single-crate binary (bin-basic)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  cargo run -p dioxus-cli -- serve -p bin-basic --hot-patch
+
+Expected: "Hello from bin-basic v1" each second.
+Patch:    edit bin-basic/src/main.rs — change "v1" to "v2".
+Expected: output changes without restarting.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TEST 5 — Multi-crate binary (bin-multi-crate)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  cargo run -p dioxus-cli -- serve -p bin-multi-crate --hot-patch
+
+Expected: "compute(21) = 42" each second.
+Patch:    edit bin-multi-crate/src/main.rs — change compute(21) to compute(99).
+      OR  edit bin-dep/src/lib.rs — change x * 2 to x * 3.
+Expected: output changes without restarting.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TEST 6 — Transitive-dependency binary (bin-transitive-dep)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  cargo run -p dioxus-cli -- serve -p bin-transitive-dep --hot-patch
+
+Chain: bin-transitive-dep → bin-dep-middle → bin-dep-nested
+Expected: "quadruple(7) = 28" each second.
+Patch A:  edit argument to quadruple() in this file.
+Patch B:  edit bin-dep-middle/src/lib.rs (direct dep).
+Patch C:  edit bin-dep-nested/src/lib.rs (transitive dep — not in Cargo.toml of tip).
+Expected: output changes for all three without restarting.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TEST 7 — cross-tls (existing bin-target test, unmodified)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   cargo run -p dioxus-cli -- serve -p subsecond-tls-harness --hot-patch
 

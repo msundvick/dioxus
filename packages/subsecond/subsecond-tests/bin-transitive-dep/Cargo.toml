@@ -1,0 +1,9 @@
+[package]
+name = "bin-transitive-dep"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+dioxus-devtools = { workspace = true }
+bin-dep-middle = { path = "../bin-dep-middle" }

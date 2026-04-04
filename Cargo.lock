@@ -2580,6 +2580,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "bin-basic"
+version = "0.1.0"
+dependencies = [
+ "dioxus-devtools",
+]
+
+[[package]]
+name = "bin-dep"
+version = "0.1.0"
+
+[[package]]
+name = "bin-dep-middle"
+version = "0.1.0"
+dependencies = [
+ "bin-dep-nested",
+]
+
+[[package]]
+name = "bin-dep-nested"
+version = "0.1.0"
+
+[[package]]
+name = "bin-multi-crate"
+version = "0.1.0"
+dependencies = [
+ "bin-dep",
+ "dioxus-devtools",
+]
+
+[[package]]
+name = "bin-transitive-dep"
+version = "0.1.0"
+dependencies = [
+ "bin-dep-middle",
+ "dioxus-devtools",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

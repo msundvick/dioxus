@@ -1,0 +1,9 @@
+[package]
+name = "bin-multi-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+dioxus-devtools = { workspace = true }
+bin-dep = { path = "../bin-dep" }
