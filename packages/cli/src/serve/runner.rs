@@ -1136,31 +1136,60 @@ impl AppServer {
     /// - the Dioxus.toml file - this is so we can hotreload the project if the user changes the Dioxus config
     fn local_dependencies(&self, crate_package: NodeId) -> Vec<PathBuf> {
         let mut paths = vec![];
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(crate_package);
 
-        for (dependency, _edge) in self.workspace.krates.get_deps(crate_package) {
-            let krate = match dependency {
-                krates::Node::Krate { krate, .. } => krate,
-                krates::Node::Feature { krate_index, .. } => {
-                    &self.workspace.krates[krate_index.index()]
+        while let Some(current) = queue.pop_front() {
+            for (dependency, _edge) in self.workspace.krates.get_deps(current) {
+                let (krate, dep_nid) = match dependency {
+                    krates::Node::Krate { id, krate, .. } => {
+                        let nid = self.workspace.krates.nid_for_kid(id).unwrap();
+                        (krate, nid)
+                    }
+                    krates::Node::Feature { krate_index, .. } => {
+                        let krate = &self.workspace.krates[krate_index.index()];
+                        if !krate
+                            .manifest_path
+                            .components()
+                            .any(|c| c.as_str() == ".cargo")
+                        {
+                            paths.push(
+                                krate
+                                    .manifest_path
+                                    .parent()
+                                    .unwrap()
+                                    .to_path_buf()
+                                    .into_std_path_buf(),
+                            );
+                        }
+                        continue;
+                    }
+                };
+
+                if !visited.insert(dep_nid) {
+                    continue;
                 }
-            };
 
-            if krate
-                .manifest_path
-                .components()
-                .any(|c| c.as_str() == ".cargo")
-            {
-                continue;
-            }
-
-            paths.push(
-                krate
+                if krate
                     .manifest_path
-                    .parent()
-                    .unwrap()
-                    .to_path_buf()
-                    .into_std_path_buf(),
-            );
+                    .components()
+                    .any(|c| c.as_str() == ".cargo")
+                {
+                    continue;
+                }
+
+                paths.push(
+                    krate
+                        .manifest_path
+                        .parent()
+                        .unwrap()
+                        .to_path_buf()
+                        .into_std_path_buf(),
+                );
+
+                queue.push_back(dep_nid);
+            }
         }
 
         paths
