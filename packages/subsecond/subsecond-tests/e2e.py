@@ -31,7 +31,6 @@ import re
 import signal
 import sys
 import time
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -144,7 +143,7 @@ class ManagedProcess:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                snippet = "\n".join(f"    {l}" for l in recent[-context_lines:])
+                snippet = "\n".join(f"    {line}" for line in recent[-context_lines:])
                 raise TimeoutError(
                     f"[{self.label}] Pattern {pattern!r} not seen within {timeout}s.\n"
                     f"Last {len(recent)} lines:\n{snippet}"
@@ -154,13 +153,13 @@ class ManagedProcess:
                     asyncio.shield(self._queue.get()), timeout=remaining
                 )
             except asyncio.TimeoutError:
-                snippet = "\n".join(f"    {l}" for l in recent[-context_lines:])
+                snippet = "\n".join(f"    {line}" for line in recent[-context_lines:])
                 raise TimeoutError(
                     f"[{self.label}] Pattern {pattern!r} not seen within {timeout}s.\n"
                     f"Last {len(recent)} lines:\n{snippet}"
                 )
             if line is None:
-                snippet = "\n".join(f"    {l}" for l in recent[-context_lines:])
+                snippet = "\n".join(f"    {line}" for line in recent[-context_lines:])
                 raise EOFError(
                     f"[{self.label}] Process exited before pattern {pattern!r} matched.\n"
                     f"Last {len(recent)} lines:\n{snippet}"
@@ -490,7 +489,7 @@ async def run_test(
         # ── 5. Apply source edit ───────────────────────────────────────────────
         print(f"  Applying {len(spec.edits)} edit(s)…")
         edit_ctx.apply()
-        print(f"  Edit applied.")
+        print("  Edit applied.")
 
         # ── 6. Verify patched output ───────────────────────────────────────────
         print(f"  Waiting for patched pattern: {spec.patched_pattern!r}")
