@@ -112,6 +112,10 @@ pub(crate) struct AppBuilder {
 
     /// Cache of the latest `.rcgu.o` files for each modified workspace crate.
     pub object_cache: ObjectCache,
+
+    /// A patch request that arrived before the ASLR reference was known.
+    /// Retried automatically when the client connects and provides its ASLR reference.
+    pub pending_patch: Option<(Vec<PathBuf>, Vec<String>)>,
 }
 
 impl AppBuilder {
@@ -170,6 +174,7 @@ impl AppBuilder {
             pid: None,
             modified_crates: HashSet::new(),
             object_cache: ObjectCache::new(&request.session_cache_dir()),
+            pending_patch: None,
         })
     }
 
@@ -359,8 +364,9 @@ impl AppBuilder {
             }
             None => {
                 tracing::warn!(
-                    "Ignoring hotpatch since there is no ASLR reference. Is the client connected?"
+                    "Queuing hotpatch — no ASLR reference yet. Will retry when client connects."
                 );
+                self.pending_patch = Some((changed_files, changed_crates));
                 return;
             }
         };

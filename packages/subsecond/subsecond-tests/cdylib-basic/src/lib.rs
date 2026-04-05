@@ -16,5 +16,7 @@ pub extern "C" fn get_version() -> u32 {
 }
 
 fn version() -> u32 {
-    12
+    let v = vec![1, 23, 3];
+    println!("{v:?}");
+    13
 }

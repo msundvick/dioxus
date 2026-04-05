@@ -907,6 +907,12 @@ impl AppServer {
                     if let Some(pid) = pid {
                         self.client.pid = Some(pid);
                     }
+                    // Retry any patch that was queued before the ASLR reference arrived.
+                    // This handles the race where a file edit occurs before the client
+                    // finishes connecting and providing its ASLR reference.
+                    if let Some((files, crates)) = self.client.pending_patch.take() {
+                        self.client.patch_rebuild(files, crates, BuildId::PRIMARY);
+                    }
                 }
             }
             BuildId::SECONDARY => {
