@@ -5,6 +5,11 @@ use std::sync::Arc;
 
 notebook! {
     // Cell 0
+    global {
+        struct Hi {
+            a: i64,
+        }
+    }
     cell {
         println!("\n[Cell 0] Fetching dataset...");
         let data = Arc::new(vec![1, 2, 3, 4, 6]);
@@ -13,6 +18,7 @@ notebook! {
 
     // Cell 1
     cell {
+        let _ = Hi {a: 2};
         println!("[Cell 1] Calculating...");
         let processed: Vec<i32> = data.iter().map(|x| x * multiplier).collect();
     }
@@ -31,6 +37,7 @@ fn main() {
     dioxus_devtools::connect_subsecond();
     // We can do standard setup here now!
     println!("Initializing environment...");
+    let data = Arc::new(vec![1, 2, 3, 4, 6]);
 
     // Hand off control to the interactive loop
     dioxus_devtools::subsecond::notebook_engine::run_interactive(run_notebook);
