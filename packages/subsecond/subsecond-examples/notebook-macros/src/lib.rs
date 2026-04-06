@@ -21,6 +21,9 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                 // Grab the { ... } block immediately following the keyword
                 if let Some(proc_macro2::TokenTree::Group(g)) = iter.peek() {
                     if g.delimiter() == proc_macro2::Delimiter::Brace {
+                        // CLONE THE ORIGINAL GROUP: This preserves the exact spans of the
+                        // user's original `{` and `}`.
+                        // let g_clone = g.clone();
                         let group_stream = g.stream();
                         iter.next(); // Consume the group
 
@@ -32,10 +35,17 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                             match syn::parse2::<syn::Block>(block_quote) {
                                 Ok(block) => {
                                     // SYNTAX IS VALID: Do our standard tuple extraction
-                                    let stmts = &block.stmts;
+                                    let mut stmts = block.stmts.clone();
                                     let mut exports = Vec::new();
 
-                                    for stmt in stmts {
+                                    // Detect and extract trailing expression (no semicolon)
+                                    let mut trailing_expr = None;
+                                    if let Some(Stmt::Expr(expr, None)) = stmts.last() {
+                                        trailing_expr = Some(expr.clone());
+                                        stmts.pop(); // Remove it from the main body
+                                    }
+
+                                    for stmt in &stmts {
                                         if let Stmt::Local(local) = stmt {
                                             let pat = match &local.pat {
                                                 Pat::Type(pat_type) => &*pat_type.pat,
@@ -50,11 +60,23 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                                     let export_tuple = quote! { ( #( #exports, )* ) };
                                     let idx = cell_count;
 
+                                    // If there was a trailing expression, print it!
+                                    let display_gen = if let Some(expr) = trailing_expr {
+                                        quote! {
+                                            let __cell_res = #expr;
+                                            // Using the Debug trait to prove we can display trailing returns
+                                            println!("Out[{}]: {:?}", #idx, __cell_res);
+                                        }
+                                    } else {
+                                        quote! {}
+                                    };
+
                                     let cell_gen = quote! {
                                         let is_dirty = flags.get(#idx).copied().unwrap_or(true);
 
                                         let #export_tuple = dioxus_devtools::subsecond::notebook_engine::memoize(#idx, is_dirty, || {
                                             #(#stmts)*
+                                            #display_gen
                                             #export_tuple
                                         });
                                     };
@@ -63,13 +85,27 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                                 }
                                 Err(_) => {
                                     // SYNTAX IS BROKEN (e.g. user typing `data.`):
-                                    // We gracefully degrade ONLY this cell. We dump its raw
-                                    // tokens into a local scope so RA can type-check and provide
-                                    // auto-complete perfectly!
+                                    let idx = cell_count;
+                                    let fallback_fn = quote::format_ident!("_ra_fallback_{}", idx);
+
+                                    let mut last_span = proc_macro2::Span::call_site();
+                                    for tt in group_stream.clone() {
+                                        last_span = tt.span();
+                                    }
+
+                                    // ISOLATE THE BROKEN TOKENS
+                                    // We use `#g_clone` directly as the body of the function.
+                                    // Because `g_clone` is a `{ ... }` block, `fn _ra_fallback_0() { ... }`
+                                    // becomes a perfectly valid native Rust function declaration!
+                                    // `rust-analyzer` handles trailing dots inside standard functions flawlessly.
+                                    // We intentionally omit `unreachable!()` and exports here to prevent
+                                    // poisoning downstream type inference with `!` (never) types.
+                                    let mut semi =
+                                        proc_macro2::Punct::new(';', proc_macro2::Spacing::Alone);
+                                    semi.set_span(last_span);
                                     let cell_gen = quote! {
-                                        {
-                                            #group_stream
-                                        }
+                                        #[allow(dead_code)]
+                                        fn #fallback_fn() { #group_stream #semi }
                                     };
                                     cell_tokens.push(cell_gen);
                                 }
