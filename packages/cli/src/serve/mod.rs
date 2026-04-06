@@ -8,16 +8,78 @@ mod ansi_buffer;
 mod output;
 mod proxy;
 mod proxy_ws;
+mod pty_output;
 mod runner;
 mod server;
 mod update;
 
 use anyhow::bail;
+use cargo_metadata::diagnostic::Diagnostic;
 use dioxus_dx_wire_format::BuildStage;
 pub(crate) use output::*;
+pub(crate) use pty_output::*;
 pub(crate) use runner::*;
 pub(crate) use server::*;
 pub(crate) use update::*;
+
+use crate::TraceMsg;
+
+/// Abstraction over the two TUI modes: inline (default) or PTY sidebar (--app-terminal).
+pub(crate) enum Screen {
+    Inline(Output),
+    AppTerminal(PtyOutput),
+}
+
+impl Screen {
+    pub async fn wait(&mut self) -> ServeUpdate {
+        match self {
+            Screen::Inline(o) => o.wait().await,
+            Screen::AppTerminal(p) => p.wait().await,
+        }
+    }
+
+    pub fn render(&mut self, runner: &AppServer, server: &WebServer) {
+        match self {
+            Screen::Inline(o) => o.render(runner, server),
+            Screen::AppTerminal(p) => p.render(runner, server),
+        }
+    }
+
+    pub fn push_log(&mut self, log: TraceMsg) {
+        match self {
+            Screen::Inline(o) => o.push_log(log),
+            Screen::AppTerminal(p) => p.push_log(log),
+        }
+    }
+
+    pub fn push_cargo_log(&mut self, message: Diagnostic) {
+        match self {
+            Screen::Inline(o) => o.push_cargo_log(message),
+            Screen::AppTerminal(p) => p.push_cargo_log(message),
+        }
+    }
+
+    pub fn push_stdio(&mut self, bundle: BundleFormat, msg: String, level: tracing::Level) {
+        match self {
+            Screen::Inline(o) => o.push_stdio(bundle, msg, level),
+            Screen::AppTerminal(p) => p.push_stdio(bundle, msg, level),
+        }
+    }
+
+    pub fn push_ws_message(&mut self, bundle: BundleFormat, msg: &axum::extract::ws::Message) {
+        match self {
+            Screen::Inline(o) => o.push_ws_message(bundle, msg),
+            Screen::AppTerminal(p) => p.push_ws_message(bundle, msg),
+        }
+    }
+
+    pub fn new_build_update(&mut self, update: &BuilderUpdate) {
+        match self {
+            Screen::Inline(o) => o.new_build_update(update),
+            Screen::AppTerminal(p) => p.new_build_update(update),
+        }
+    }
+}
 
 /// For *all* builds, the CLI spins up a dedicated webserver, file watcher, and build infrastructure to serve the project.
 ///
@@ -42,9 +104,26 @@ pub(crate) use update::*;
 pub(crate) async fn serve_all(args: ServeArgs, tracer: &TraceController) -> Result<()> {
     // Load the args into a plan, resolving all tooling, build dirs, arguments, decoding the multi-target, etc
     let exit_on_error = args.exit_on_error;
+    let app_terminal = args.app_terminal;
     let mut builder = AppServer::new(args).await?;
     let mut devserver = WebServer::start(&builder)?;
-    let mut screen = Output::start(builder.interactive).await?;
+
+    let mut screen = if app_terminal {
+        // Set up PTY for the child process
+        let pty_system = portable_pty::native_pty_system();
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+        let pty_size = portable_pty::PtySize {
+            rows,
+            cols: cols.saturating_sub(pty_output::SIDEBAR_WIDTH + 1),
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pair = pty_system.openpty(pty_size)?;
+        builder.client.pty_slave = Some(pair.slave);
+        Screen::AppTerminal(PtyOutput::start(pair.master, pty_size)?)
+    } else {
+        Screen::Inline(Output::start(builder.interactive).await?)
+    };
 
     // This is our default splash screen. We might want to make this a fancier splash screen in the future
     // Also, these commands might not be the most important, but it's all we've got enabled right now

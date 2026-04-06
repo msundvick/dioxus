@@ -116,6 +116,13 @@ pub(crate) struct AppBuilder {
     /// A patch request that arrived before the ASLR reference was known.
     /// Retried automatically when the client connects and provides its ASLR reference.
     pub pending_patch: Option<(Vec<PathBuf>, Vec<String>)>,
+
+    /// When set, the child will be spawned in a PTY instead of with piped stdio.
+    /// This is consumed during `open()` and used by `open_with_pty()`.
+    pub pty_slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
+
+    /// The PTY child process handle (used instead of `child` when in PTY mode).
+    pub pty_child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
 }
 
 impl AppBuilder {
@@ -176,6 +183,8 @@ impl AppBuilder {
             modified_crates: HashSet::new(),
             object_cache: ObjectCache::new(&request.session_cache_dir()),
             pending_patch: None,
+            pty_slave: None,
+            pty_child: None,
         })
     }
 
@@ -682,7 +691,13 @@ impl AppBuilder {
             BundleFormat::Server
             | BundleFormat::MacOS
             | BundleFormat::Windows
-            | BundleFormat::Linux => self.open_with_main_exe(envs, args)?,
+            | BundleFormat::Linux => {
+                if self.pty_slave.is_some() {
+                    self.open_with_pty(envs, args)?;
+                } else {
+                    self.open_with_main_exe(envs, args)?;
+                }
+            }
         };
 
         self.builds_opened += 1;
@@ -698,6 +713,18 @@ impl AppBuilder {
     /// Also wipes away the entropy executables if they exist.
     pub(crate) async fn soft_kill(&mut self) {
         use futures_util::FutureExt;
+
+        // Kill PTY child if it exists
+        if let Some(mut pty_child) = self.pty_child.take() {
+            let _ = pty_child.kill();
+            if let Some(entropy_app_exe) = self.entropy_app_exe.take() {
+                _ = std::fs::remove_file(entropy_app_exe);
+            }
+            if let Some(spawn_handle) = self.spawn_handle.take() {
+                spawn_handle.abort();
+            }
+            return;
+        }
 
         // Kill any running executables on Windows
         let Some(mut process) = self.child.take() else {
@@ -955,6 +982,33 @@ impl AppBuilder {
         self.stdin = child.stdin.take().map(BufWriter::new);
         self.child = Some(child);
 
+        Ok(())
+    }
+
+    /// Spawn the child process inside a PTY. The master end of the PTY is owned by `PtyOutput`.
+    fn open_with_pty(&mut self, envs: Vec<(String, String)>, args: &[String]) -> Result<()> {
+        let slave = self
+            .pty_slave
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No PTY slave available"))?;
+
+        let main_exe = self.app_exe();
+        tracing::debug!("Opening app with PTY: {main_exe:?}");
+
+        let mut cmd = portable_pty::CommandBuilder::new(&main_exe);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        for (k, v) in &envs {
+            cmd.env(k, v);
+        }
+
+        let child = slave
+            .spawn_command(cmd)
+            .context("Failed to spawn child in PTY")?;
+        self.pty_child = Some(child);
+
+        // stdout/stderr/stdin stay None — all IO goes through the PTY master
         Ok(())
     }
 

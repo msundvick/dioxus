@@ -69,6 +69,10 @@ pub(crate) struct ServeArgs {
     #[clap(hide = true)]
     pub(crate) exit_on_error: bool,
 
+    /// Run the app in an embedded terminal with a dx sidebar (for interactive CLI/TUI apps)
+    #[clap(long)]
+    pub(crate) app_terminal: bool,
+
     /// Platform-specific arguments for the build
     #[clap(flatten)]
     pub(crate) platform_args: CommandWithPlatformOverrides<PlatformServeArgs>,
@@ -123,6 +127,7 @@ impl Anonymized for ServeArgs {
             "hot_patch": self.hot_patch,
             "watch": self.watch,
             "exit_on_error": self.exit_on_error,
+            "app_terminal": self.app_terminal,
             "platform_args": self.platform_args.anonymized(),
         }}
     }
