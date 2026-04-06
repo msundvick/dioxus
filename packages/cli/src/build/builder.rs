@@ -20,8 +20,8 @@ use std::{
 use subsecond_types::JumpTable;
 use target_lexicon::Architecture;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader, Lines},
-    process::{Child, ChildStderr, ChildStdout, Command},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, Lines},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -76,10 +76,10 @@ pub(crate) struct AppBuilder {
     // These might be None if the app died or the user did not specify a server
     pub child: Option<Child>,
 
-    // stdio for the app so we can read its stdout/stderr
-    // we don't map stdin today (todo) but most apps don't need it
+    // stdio for the app so we can read its stdout/stderr and write to its stdin
     pub stdout: Option<Lines<BufReader<ChildStdout>>>,
     pub stderr: Option<Lines<BufReader<ChildStderr>>>,
+    pub stdin: Option<BufWriter<ChildStdin>>,
 
     // Android logcat stream (treated as stderr for error/warn levels)
     pub adb_logcat_stdout: Option<UnboundedReceiverStream<String>>,
@@ -166,6 +166,7 @@ impl AppBuilder {
             child: None,
             stderr: None,
             stdout: None,
+            stdin: None,
             adb_logcat_stdout: None,
             spawn_handle: None,
             entropy_app_exe: None,
@@ -941,6 +942,7 @@ impl AppBuilder {
         let mut child = Command::new(main_exe)
             .args(args)
             .envs(envs)
+            .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .kill_on_drop(true)
@@ -950,8 +952,19 @@ impl AppBuilder {
         let stderr = BufReader::new(child.stderr.take().unwrap());
         self.stdout = Some(stdout.lines());
         self.stderr = Some(stderr.lines());
+        self.stdin = child.stdin.take().map(BufWriter::new);
         self.child = Some(child);
 
+        Ok(())
+    }
+
+    /// Write a line to the child process's stdin, if available.
+    pub async fn write_stdin(&mut self, line: &str) -> Result<()> {
+        if let Some(stdin) = self.stdin.as_mut() {
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            stdin.flush().await?;
+        }
         Ok(())
     }
 

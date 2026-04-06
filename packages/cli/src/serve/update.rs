@@ -46,4 +46,10 @@ pub(crate) enum ServeUpdate {
     Exit {
         error: Option<Error>,
     },
+
+    /// Forward a line of text to the stdin of the running child process.
+    ForwardStdin {
+        id: BuildId,
+        line: String,
+    },
 }

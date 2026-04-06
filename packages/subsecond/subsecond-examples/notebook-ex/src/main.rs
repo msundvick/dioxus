@@ -1,119 +1,150 @@
 use dioxus_devtools::subsecond::HotFn;
-use std::sync::Arc;
-use std::time::Duration;
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 // =====================================================================
-// GENERATOR VIEW: The State Structs
-// Pure data — no methods, no mutation. Cells are pure functions.
-// When a cell's output struct gains/loses fields, the runtime detects
-// the code change via ptr_address() and drops the cached Arc so the
-// new layout is never aliased with old memory.
+// 1. THE ENGINE INFRASTRUCTURE (Hidden from User)
 // =====================================================================
-#[derive(Debug)]
-pub struct Cell1State {
-    pub data: Vec<i32>,
-    pub multiplier: i32,
+
+// A global cache to hold the memoized outputs of every cell.
+// We use OnceLock to safely initialize this without needing external crates like lazy_static.
+static CACHE: OnceLock<Mutex<HashMap<&'static str, Box<dyn Any + Send>>>> = OnceLock::new();
+
+fn get_cache() -> &'static Mutex<HashMap<&'static str, Box<dyn Any + Send>>> {
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[derive(Debug)]
-pub struct Cell2State {
-    pub processed: Vec<i32>,
+// The Magic Memoizer:
+// T is completely inferred by the closure's return type.
+// No explicit typing required by the AST generator!
+fn memoize<T: Clone + Send + 'static>(
+    cell_id: &'static str,
+    is_dirty: bool,
+    cell_logic: impl FnOnce() -> T,
+) -> T {
+    let mut cache = get_cache().lock().unwrap();
+
+    if is_dirty || !cache.contains_key(cell_id) {
+        // Execute the cell logic
+        let result = cell_logic();
+        // Save a boxed clone of the tuple to the cache
+        cache.insert(cell_id, Box::new(result.clone()));
+        result
+    } else {
+        // Skip execution! Downcast the cached Any box safely to T
+        let cached_any = cache.get(cell_id).unwrap();
+        cached_any.downcast_ref::<T>().unwrap().clone()
+    }
+}
+
+pub type DirtyFlags = HashMap<&'static str, bool>;
+
+// =====================================================================
+// 2. THE GENERATED CODE (What `syn` produces)
+// =====================================================================
+// Notice how the generated boundary is a strict function pointer, and
+// there are ZERO type definitions required for the cell exports!
+
+pub fn run_notebook(flags: DirtyFlags) {
+    println!("\n--- 📓 Notebook Execution Start ---");
+
+    // --- GENERATED CELL 1 ---
+    let is_cell_1_dirty = flags.get("cell_1").copied().unwrap_or(true);
+
+    // rustc infers the type of `data` and `multiplier`!
+    let (data, multiplier) = memoize("cell_1", is_cell_1_dirty, || {
+        println!("[Cell 1] 🔄 Running heavy DB/Network query...");
+
+        // --- USER CODE START ---
+        // We encourage Arc for large datasets so caching/cloning is instant.
+        let data = Arc::new(vec![1, 2, 3, 4, 5, 6]);
+        let multiplier = 10;
+        // --- USER CODE END ---
+
+        // SYN GENERATOR just needs to list the variable names exported
+        (data, multiplier)
+    });
+
+    // --- GENERATED CELL 2 ---
+    // If Cell 1 ran, Cell 2 MUST be marked dirty by the host.
+    let is_cell_2_dirty = flags.get("cell_2").copied().unwrap_or(true);
+
+    let (_processed_result,) = memoize("cell_2", is_cell_2_dirty, || {
+        println!("[Cell 2] ⚡ Running fast computation...");
+
+        // --- USER CODE START ---
+        // The user accesses variables natively, as if they were in the same scope!
+        // Try changing `x * multiplier` to `x + multiplier` while running.
+        let processed_result: Vec<i32> = data.iter().map(|x| x * multiplier).collect();
+        println!("Output: {:?}", processed_result);
+        // --- USER CODE END ---
+
+        // SYN GENERATOR output
+        (processed_result,)
+    });
+
+    println!("--- 📓 Notebook Execution End ---");
 }
 
 // =====================================================================
-// GENERATOR VIEW: The Cell Functions
-// Pure functions: inputs -> output state. No side effects on external
-// state. println! is fine for display; it doesn't affect reactivity.
+// 3. THE HOST RUNNER
 // =====================================================================
-
-pub fn run_cell_1() -> Arc<Cell1State> {
-    println!("\n[Cell 1] Executing...");
-    let data = vec![1, 2, 3, 4, 5];
-    let multiplier = 10;
-    Arc::new(Cell1State { data, multiplier })
-}
-
-// Cell 2 explicitly declares its dependency on Cell1State via its signature.
-// The proc macro will auto-derive this dependency graph from parameter types.
-pub fn run_cell_2(state_1: Arc<Cell1State>) -> Arc<Cell2State> {
-    println!("[Cell 2] Executing...");
-    let data = &state_1.data;
-    let multiplier = state_1.multiplier;
-
-    // Try editing this math while the program is running!
-    let processed: Vec<i32> = data.iter().map(|x| x * multiplier).collect();
-    println!("[Cell 2] Output: {:?}", processed);
-
-    Arc::new(Cell2State { processed })
-}
-
-// =====================================================================
-// HOST RUNNER: The Reactive Loop
-// Generated from the dependency graph. Cells execute in topological
-// order. Modification detection uses ptr_address() — if a cell's
-// function pointer changes after a patch, it was modified.
-// =====================================================================
+use std::io::{self, Write};
 
 fn main() {
     dioxus_devtools::connect_subsecond();
+    println!("--- Starting Interactive Magic Memoization ---");
+    println!("Commands:");
+    println!("  '1'   -> Mark Cell 1 as dirty (Forces 1 and 2 to run)");
+    println!("  '2'   -> Mark Cell 2 as dirty (Only Cell 2 runs)");
+    println!("  'all' -> Mark all cells dirty");
+    println!("  <RET> -> Run with no dirty flags (tests caching)");
+    println!("  Edit the code, save, then type a command to test hot-patching!\n");
 
-    let mut cell_1_hot = HotFn::current(run_cell_1);
-    let mut cell_2_hot = HotFn::current(run_cell_2);
+    let mut notebook_hot = HotFn::current(run_notebook as fn(DirtyFlags));
+    let mut flags: DirtyFlags = HashMap::new();
 
-    // Cached outputs — Option so we can drop on layout change.
-    // Dropping the Arc before re-executing ensures we never pass
-    // old-layout memory into new-layout code.
-    let mut state_1: Option<Arc<Cell1State>> = None;
-
-    // Dirty flags — true means "needs re-execution"
-    let mut cell_1_dirty = true;
-    let mut cell_2_dirty = true;
-
-    // Snapshot ptrs from the previous iteration for change detection.
-    // After a patch lands, ptr_address() returns the new jump table entry.
-    let mut prev_cell1_ptr = cell_1_hot.ptr_address();
-    let mut prev_cell2_ptr = cell_2_hot.ptr_address();
+    // Initial run: everything is dirty
+    flags.insert("cell_1", true);
+    flags.insert("cell_2", true);
 
     loop {
-        // --- Modification detection ---
-        // Compare current function pointer addresses to previous snapshot.
-        // If they differ, the cell was patched since last iteration.
-        let curr_cell1_ptr = cell_1_hot.ptr_address();
-        let curr_cell2_ptr = cell_2_hot.ptr_address();
+        // 1. Execute the patch boundary with current flags
+        notebook_hot.call((flags.clone(),));
 
-        if curr_cell1_ptr != prev_cell1_ptr {
-            println!("[Runtime] Cell 1 was patched — invalidating cache and marking dirty.");
-            // Drop cached output so old-layout Arc is gone before re-execution.
-            state_1 = None;
-            cell_1_dirty = true;
-            cell_2_dirty = true; // propagate to all downstream cells
-            prev_cell1_ptr = curr_cell1_ptr;
-        }
+        // 2. Reset flags after execution
+        flags.insert("cell_1", false);
+        flags.insert("cell_2", false);
 
-        if curr_cell2_ptr != prev_cell2_ptr {
-            println!("[Runtime] Cell 2 was patched — marking dirty.");
-            cell_2_dirty = true;
-            prev_cell2_ptr = curr_cell2_ptr;
-        }
+        // 3. Pause and wait for user command
+        print!("\n> Enter command: ");
+        io::stdout().flush().unwrap();
 
-        // --- Topological execution (cell 1 before cell 2) ---
-        // Cell 1 has no upstream dependencies.
-        if cell_1_dirty {
-            state_1 = Some(cell_1_hot.call(()));
-            cell_1_dirty = false;
-            // Always re-run downstream after cell 1 produces new output.
-            cell_2_dirty = true;
-        }
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let cmd = input.trim();
 
-        // Cell 2 depends on cell 1's output.
-        if cell_2_dirty {
-            if let Some(ref s) = state_1 {
-                cell_2_hot.call((Arc::clone(s),));
+        // 4. Update the dirty flags based on input (Simulating the AST Hasher / UI)
+        match cmd {
+            "1" => {
+                println!("🧠 Host: Marking Cell 1 (and dependents) as dirty.");
+                flags.insert("cell_1", true);
+                // DAG LOGIC: Because Cell 2 depends on Cell 1, the host must invalidate it too!
+                flags.insert("cell_2", true);
             }
-            cell_2_dirty = false;
+            "2" => {
+                println!("🧠 Host: Marking Cell 2 as dirty.");
+                flags.insert("cell_2", true);
+            }
+            "all" => {
+                println!("🧠 Host: Marking all cells as dirty.");
+                flags.insert("cell_1", true);
+                flags.insert("cell_2", true);
+            }
+            _ => {
+                println!("🧠 Host: Executing with clean flags (Testing memoization).");
+            }
         }
-
-        // Brief pause so we don't busy-wait at 100% CPU between patches.
-        std::thread::sleep(Duration::from_millis(50));
     }
 }

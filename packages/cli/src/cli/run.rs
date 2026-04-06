@@ -173,6 +173,7 @@ impl RunArgs {
                 ServeUpdate::OpenDebugger { .. } => {}
                 ServeUpdate::Redraw => {}
                 ServeUpdate::TracingLog { .. } => {}
+                ServeUpdate::ForwardStdin { .. } => {}
             }
         }
 

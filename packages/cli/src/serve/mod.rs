@@ -297,6 +297,12 @@ pub(crate) async fn serve_all(args: ServeArgs, tracer: &TraceController) -> Resu
                     None => return Ok(()),
                 }
             }
+
+            ServeUpdate::ForwardStdin { id, line } => {
+                if let Some(app_builder) = builder.get_build_mut(id) {
+                    _ = app_builder.write_stdin(&line).await;
+                }
+            }
         }
     }
 }

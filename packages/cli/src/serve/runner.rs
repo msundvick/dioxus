@@ -847,6 +847,14 @@ impl AppServer {
         }
     }
 
+    pub(crate) fn get_build_mut(&mut self, id: BuildId) -> Option<&mut AppBuilder> {
+        match id {
+            BuildId::PRIMARY => Some(&mut self.client),
+            BuildId::SECONDARY => self.server.as_mut(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn client(&self) -> &AppBuilder {
         &self.client
     }

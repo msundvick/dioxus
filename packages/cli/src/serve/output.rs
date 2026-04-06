@@ -67,6 +67,11 @@ pub struct Output {
     // ! needs to be wrapped in an &mut since `render stateful widget` requires &mut... but our
     // "render" method only borrows &self (for no particular reason at all...)
     throbber: RefCell<throbber_widgets_tui::ThrobberState>,
+
+    /// Whether the TUI is in stdin forwarding mode (toggled with 's')
+    stdin_mode: bool,
+    /// The current line being typed for forwarding to the child process stdin
+    stdin_input: String,
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +102,8 @@ impl Output {
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 interval
             },
+            stdin_mode: false,
+            stdin_input: String::new(),
         };
 
         output.startup()?;
@@ -248,10 +255,17 @@ impl Output {
             }
         }
 
+        // Ctrl+C always exits, even in stdin mode
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(Some(ServeUpdate::Exit { error: None }));
+        }
+
+        // When in stdin forwarding mode, capture all input for the child process
+        if self.stdin_mode {
+            return self.handle_stdin_mode_keypress(key);
+        }
+
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(Some(ServeUpdate::Exit { error: None }))
-            }
             KeyCode::Char('r') => return Ok(Some(ServeUpdate::RequestRebuild)),
             KeyCode::Char('o') => return Ok(Some(ServeUpdate::OpenApp)),
             KeyCode::Char('p') => return Ok(Some(ServeUpdate::ToggleShouldRebuild)),
@@ -313,10 +327,61 @@ impl Output {
                 }
             }
 
+            // Toggle stdin forwarding mode for CLI app interaction
+            KeyCode::Char('s') => {
+                self.toggle_stdin_mode()?;
+            }
+
             _ => {}
         }
 
         // Out of safety, we always redraw, since it's relatively cheap operation
+        Ok(Some(ServeUpdate::Redraw))
+    }
+
+    /// Toggle stdin forwarding mode on/off, resizing the terminal viewport accordingly.
+    fn toggle_stdin_mode(&mut self) -> Result<()> {
+        self.stdin_mode = !self.stdin_mode;
+        if !self.stdin_mode {
+            self.stdin_input.clear();
+        }
+        if let Some(terminal) = self.term.borrow_mut().as_mut() {
+            terminal.clear()?;
+            *terminal = Terminal::with_options(
+                CrosstermBackend::new(stdout()),
+                TerminalOptions {
+                    viewport: Viewport::Inline(self.viewport_current_height()),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Handle a keypress when stdin forwarding mode is active.
+    fn handle_stdin_mode_keypress(&mut self, key: KeyEvent) -> Result<Option<ServeUpdate>> {
+        match key.code {
+            // Escape or 's' exits stdin mode without sending anything
+            KeyCode::Esc | KeyCode::Char('s') if key.modifiers.is_empty() => {
+                self.toggle_stdin_mode()?;
+            }
+            // Enter sends the buffered line to the child process
+            KeyCode::Enter => {
+                let line = std::mem::take(&mut self.stdin_input);
+                return Ok(Some(ServeUpdate::ForwardStdin {
+                    id: BuildId::PRIMARY,
+                    line,
+                }));
+            }
+            // Backspace removes the last character
+            KeyCode::Backspace => {
+                self.stdin_input.pop();
+            }
+            // Printable characters are appended to the input buffer
+            KeyCode::Char(c) => {
+                self.stdin_input.push(c);
+            }
+            _ => {}
+        }
         Ok(Some(ServeUpdate::Redraw))
     }
 
@@ -466,9 +531,11 @@ impl Output {
         let mut area = frame.area();
         area.width = area.width.clamp(0, VIEWPORT_MAX_WIDTH);
 
-        let [_top, body, _bottom] = Layout::vertical([
+        let stdin_height = if self.stdin_mode { 1 } else { 0 };
+        let [_top, body, stdin_row, _bottom] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
+            Constraint::Length(stdin_height),
             Constraint::Length(1),
         ])
         .horizontal_margin(1)
@@ -477,6 +544,18 @@ impl Output {
         self.render_borders(frame, area);
         self.render_body(frame, body, state);
         self.render_body_title(frame, _top, state);
+        if self.stdin_mode {
+            self.render_stdin_prompt(frame, stdin_row);
+        }
+    }
+
+    fn render_stdin_prompt(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::Paragraph;
+        let prompt = format!("> {}_", self.stdin_input);
+        frame.render_widget(
+            Paragraph::new(prompt).style(ratatui::style::Style::default().fg(ratatui::style::Color::Cyan)),
+            area,
+        );
     }
 
     fn render_body_title(&self, frame: &mut Frame<'_>, area: Rect, _state: RenderState) {
@@ -1011,10 +1090,12 @@ impl Output {
     }
 
     fn viewport_current_height(&self) -> u16 {
-        match self.more_modal_open {
+        let base = match self.more_modal_open {
             true => VIEWPORT_HEIGHT_BIG,
             false => VIEWPORT_HEIGHT_SMALL,
-        }
+        };
+        // Add one line for the stdin prompt when in stdin mode
+        if self.stdin_mode { base + 1 } else { base }
     }
 
     fn tracemsg_to_ansi_string(log: TraceMsg) -> Vec<String> {
