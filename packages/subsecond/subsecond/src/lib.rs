@@ -1041,19 +1041,39 @@ pub mod notebook_engine {
         cell_id: usize,
         is_dirty: bool,
         cell_logic: impl FnOnce() -> T,
-    ) -> T {
-        let mut cache = get_cache().lock().unwrap();
-        if is_dirty || !cache.contains_key(&cell_id) {
-            let result = cell_logic();
-            cache.insert(cell_id, Box::new(result.clone()));
-            result
-        } else {
-            cache
+    ) -> Result<T, ()> {
+        // 1. Check if we need to run, and immediately drop the lock
+        let needs_run = {
+            let cache = get_cache().lock().unwrap();
+            is_dirty || !cache.contains_key(&cell_id)
+        };
+
+        if !needs_run {
+            let cache = get_cache().lock().unwrap();
+            return Ok(cache
                 .get(&cell_id)
                 .unwrap()
                 .downcast_ref::<T>()
                 .unwrap()
-                .clone()
+                .clone());
+        }
+
+        // 2. Run the code OUTSIDE the lock, catching any panics!
+        // AssertUnwindSafe is required because the cell closure captures variables.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell_logic()));
+
+        match result {
+            Ok(val) => {
+                // 3. If successful, re-acquire lock and cache the result
+                let mut cache = get_cache().lock().unwrap();
+                cache.insert(cell_id, Box::new(val.clone()));
+                Ok(val)
+            }
+            Err(_) => {
+                // The cell panicked!
+                // We return Err to tell the DAG to abort downstream execution.
+                Err(())
+            }
         }
     }
 
