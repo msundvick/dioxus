@@ -417,7 +417,13 @@ impl<A, M, F: HotFunction<A, M>> HotFn<A, M, F> {
             // Try to handle known function pointers. This is *really really* unsafe, but due to how
             // rust trait objects work, it's impossible to make an arbitrary usize-sized type implement Fn()
             // since that would require a vtable pointer, pushing out the bounds of the pointer size.
-            if size_of::<F>() == size_of::<fn() -> ()>() {
+
+            // FIX: Ensure 8-byte closures aren't accidentally treated as raw function pointers
+            // Note, this might be quite unstable! However, I can't see any other way to tell 8-byte closure captures and raw function pointers apart
+            let type_name = std::any::type_name::<F>();
+            let is_closure = type_name.contains("{{closure}}");
+
+            if !is_closure && size_of::<F>() == size_of::<fn() -> ()>() {
                 return Ok(self.inner.call_as_ptr(args));
             }
 
@@ -433,6 +439,18 @@ impl<A, M, F: HotFunction<A, M>> HotFn<A, M, F> {
                     // Technically function pointers need to be aligned, but that alignment is 1 so we're good
                     let call_it = transmute::<*const (), fn(&F, A) -> F::Return>(ptr as _);
                     return Ok(call_it(&self.inner, args));
+                } else {
+                    let is_stateful = size_of::<F>() > 0;
+
+                    if is_closure && is_stateful {
+                        eprintln!(
+                            "\n⚠️ SUBSECOND WARNING: A stateful closure failed to hot-patch!\n\
+                             Type: {}\n\
+                             Reason: The captured environment variables likely changed, altering the memory layout.\n\
+                             Action: Subsecond is silently falling back to the stale, unpatched code.\n",
+                            type_name
+                        );
+                    }
                 }
             }
 
@@ -748,7 +766,8 @@ pub fn aslr_reference() -> usize {
                         libc::RTLD_DEFAULT
                     };
                     // 3. Search for the optional macro anchor first
-                    let ptr = libc::dlsym(search_handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
+                    let ptr =
+                        libc::dlsym(search_handle, c"__SUBSECOND_ASLR_REFERENCE".as_ptr() as _);
                     if !ptr.is_null() {
                         SENTINEL_PTR = ptr;
                     } else {
