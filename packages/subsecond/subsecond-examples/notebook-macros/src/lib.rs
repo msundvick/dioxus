@@ -1,9 +1,8 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Block, Ident, LitStr, Pat, Stmt, Token};
+use syn::{Block, Ident, LitStr, Pat, Stmt};
 
-// 1. Define our custom AST nodes
 struct Notebook {
     cells: Vec<Cell>,
 }
@@ -13,12 +12,10 @@ struct Cell {
     block: Block,
 }
 
-// 2. Implement parsing for our custom syntax
 impl Parse for Notebook {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut cells = Vec::new();
         while !input.is_empty() {
-            // Parse the keyword `cell`, then a string literal, then a `{}` block
             let _kw: Ident = input.parse()?;
             let name: LitStr = input.parse()?;
             let block: Block = input.parse()?;
@@ -28,16 +25,28 @@ impl Parse for Notebook {
     }
 }
 
-// 3. The actual macro generator
 #[proc_macro]
 pub fn notebook(input: TokenStream) -> TokenStream {
-    let nb = parse_macro_input!(input as Notebook);
+    // 1. Convert to proc_macro2::TokenStream so we can clone and manipulate it safely
+    let input2 = proc_macro2::TokenStream::from(input);
+
+    // 2. RUST-ANALYZER MAGIC: Catch parsing errors instead of panicking!
+    let nb = match syn::parse2::<Notebook>(input2.clone()) {
+        Ok(nb) => nb,
+        Err(e) => {
+            // If the user is mid-typing and the AST is invalid, emit the compile error,
+            // BUT ALSO spit their raw tokens back out so RA has context for auto-complete!
+            let mut err = e.to_compile_error();
+            err.extend(input2);
+            return TokenStream::from(err);
+        }
+    };
 
     let mut cell_tokens = Vec::new();
 
     for cell in nb.cells {
         let name = &cell.name;
-        let stmts = &cell.block.stmts; // <--- 1. Extract the statements
+        let stmts = &cell.block.stmts;
         let mut exports = Vec::new();
 
         for stmt in stmts {
@@ -59,8 +68,7 @@ pub fn notebook(input: TokenStream) -> TokenStream {
             let is_dirty = flags.get(#name).copied().unwrap_or(true);
 
             let #export_tuple = memoize(#name, is_dirty, || {
-                #(#stmts)* // <--- 2. Unpack the statements without curly braces!
-
+                #(#stmts)*
                 #export_tuple
             });
         };
@@ -68,8 +76,9 @@ pub fn notebook(input: TokenStream) -> TokenStream {
         cell_tokens.push(cell_gen);
     }
 
-    // 7. Wrap it all in our FFI-friendly boundary
+    // 3. Add #[allow(...)] to silence the unused variable warnings
     let expanded = quote! {
+        #[allow(unused_variables, unused_mut, unused_imports)]
         pub fn run_notebook(flags: std::collections::HashMap<&'static str, bool>) {
             #(#cell_tokens)*
         }

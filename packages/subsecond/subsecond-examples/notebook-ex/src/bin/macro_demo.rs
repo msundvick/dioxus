@@ -50,6 +50,7 @@ notebook! {
 }
 
 fn main() {
+    dioxus_devtools::connect_subsecond();
     // 1. Setup HotFn
     let mut notebook_hot = HotFn::current(run_notebook as fn(HashMap<&'static str, bool>));
 
