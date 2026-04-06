@@ -1024,17 +1024,30 @@ impl_hot_function!(
 );
 
 pub mod notebook_engine {
+    use tokio::runtime::Runtime;
+
     use super::HotFn;
     use std::any::Any;
     use std::collections::HashMap;
     use std::io::{self, Write};
     use std::sync::{Mutex, OnceLock};
 
-    // The cache uses `usize` instead of strings now! Blazing fast.
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     static CACHE: OnceLock<Mutex<HashMap<usize, Box<dyn Any + Send>>>> = OnceLock::new();
+
+    pub fn get_runtime() -> &'static Runtime {
+        RUNTIME.get_or_init(|| Runtime::new().expect("Failed to create Tokio runtime"))
+    }
 
     pub fn get_cache() -> &'static Mutex<HashMap<usize, Box<dyn Any + Send>>> {
         CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn clean_cache(valid_cell_count: usize) {
+        let mut cache = get_cache().lock().unwrap();
+        // Retain only cache entries whose index is strictly less than the current cell count.
+        // This drops the massive Arcs/Vectors of any cells the user deleted from the file!
+        cache.retain(|&idx, _| idx < valid_cell_count);
     }
 
     pub fn memoize<T: Clone + Send + 'static>(
@@ -1045,7 +1058,22 @@ pub mod notebook_engine {
         // 1. Check if we need to run, and immediately drop the lock
         let needs_run = {
             let cache = get_cache().lock().unwrap();
-            is_dirty || !cache.contains_key(&cell_id)
+
+            if is_dirty {
+                true
+            } else if let Some(cached_any) = cache.get(&cell_id) {
+                // CRITICAL FIX: Defensive Downcasting!
+                // If a user deletes a cell, all downstream cells shift their index.
+                // Or if a user adds/removes a `let` variable, the tuple type `T` changes.
+                // If the types don't match exactly, we MUST treat it as dirty!
+                if !cached_any.is::<T>() {
+                    true // Type signature changed! Force re-run.
+                } else {
+                    false // Clean and type-safe. Use cache.
+                }
+            } else {
+                true // Not in cache
+            }
         };
 
         if !needs_run {
@@ -1088,6 +1116,8 @@ pub mod notebook_engine {
         loop {
             // Call the boundary and get the current number of cells
             let cell_count = notebook_hot.call((flags.clone(),));
+
+            clean_cache(cell_count);
 
             // Resize the vector to match the compiled code exactly
             flags.clear();

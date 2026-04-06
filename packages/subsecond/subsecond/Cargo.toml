@@ -13,6 +13,7 @@ readme = "../README.md"
 serde = { workspace = true, features = ["derive"] }
 subsecond-types = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { workspace = true, features = ["FetchEvent", "Request", "Window", "Response", "ResponseType", "console"] }

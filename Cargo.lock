@@ -14950,6 +14950,7 @@ dependencies = [
  "serde",
  "subsecond-types",
  "thiserror 2.0.18",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

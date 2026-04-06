@@ -7,11 +7,12 @@ notebook! {
     // Cell 0
     cell {
         println!("\n[Cell 0] Fetching dataset...");
-        let multiplier = 10;
         let data = Arc::new(vec![1, 2, 3, 4, 6]);
-        // data.to_owned
+        let multiplier = 10;
     }
     global {
+        #[allow(dead_code)]
+        #[derive(Clone)]
         struct Hi {
             a: i64,
         }
@@ -38,7 +39,6 @@ fn main() {
     dioxus_devtools::connect_subsecond();
     // We can do standard setup here now!
     println!("Initializing environment...");
-    let data = Arc::new(vec![1, 2, 3, 4, 6]);
 
     // Hand off control to the interactive loop
     dioxus_devtools::subsecond::notebook_engine::run_interactive(run_notebook);
