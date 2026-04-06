@@ -5,12 +5,11 @@ use std::time::Duration;
 fn hot_closure_generator() -> Box<dyn Fn() -> String> {
     let x = 10;
     let y = 20;
-    let z = 30;
 
     // ---- EDIT THIS WHILE RUNNING ----
     // Try adding a new variable: `let z = 30;`
     // And change the format string to use it: `format!("x: {}, y: {}, z: {}", x, y, z)`
-    Box::new(move || format!("Captured state2 - x: {}, y: {} {z}", x, y))
+    Box::new(move || format!("Captured state - x: {}, y: {}", x, y))
     // ---------------------------------
 }
 

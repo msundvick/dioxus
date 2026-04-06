@@ -10723,6 +10723,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-ex"
+version = "0.1.0"
+dependencies = [
+ "dioxus-devtools",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
