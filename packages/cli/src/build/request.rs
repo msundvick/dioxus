@@ -1475,6 +1475,13 @@ impl BuildRequest {
         };
 
         let tip_name = self.tip_crate_name();
+        // When using a custom binary target (e.g. `--bin exp3_closures` on package
+        // `notebook-ex`), `tip_crate_name()` returns the *bin target* name while
+        // `file_to_workspace_crate` returns the *package* name.  We need to exclude
+        // both so the tip package isn't mistakenly treated as a workspace dep.
+        let tip_package_name = self.workspace.krates[self.crate_package]
+            .name
+            .replace('-', "_");
         let mut object_cache = object_cache.clone();
 
         // Compile workspace dep crates with cascade. Start with the explicitly changed dep
@@ -1482,7 +1489,7 @@ impl BuildRequest {
         // add the crate's workspace dependents so their rlibs have consistent SVH references.
         let mut crates_to_compile: Vec<String> = changed_crates
             .iter()
-            .filter(|c| *c != &tip_name)
+            .filter(|c| *c != &tip_name && *c != &tip_package_name)
             .cloned()
             .collect();
         let mut compiled = HashSet::new();
@@ -1492,7 +1499,7 @@ impl BuildRequest {
             let crate_name = crates_to_compile[idx].clone();
             idx += 1;
 
-            if !compiled.insert(crate_name.clone()) || crate_name == tip_name {
+            if !compiled.insert(crate_name.clone()) || crate_name == tip_name || crate_name == tip_package_name {
                 continue;
             }
 
