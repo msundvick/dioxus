@@ -5,3 +5,15 @@ edition = "2021"
 
 [dependencies]
 dioxus-devtools = { workspace = true }
+
+[[bin]]
+name = "exp1_registry"
+path = "src/bin/exp1_registry.rs"
+
+[[bin]]
+name = "exp2_reactive"
+path = "src/bin/exp2_reactive.rs"
+
+[[bin]]
+name = "exp3_closures"
+path = "src/bin/exp3_closures.rs"

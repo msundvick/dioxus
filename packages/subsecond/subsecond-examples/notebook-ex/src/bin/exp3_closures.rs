@@ -24,7 +24,7 @@ fn main() {
         dioxus_devtools::subsecond::call(|| {
             let closure = hot_closure_generator();
             let result = closure();
-            println!("{}", result);
+            println!(" {}", result);
         });
 
         thread::sleep(Duration::from_secs(1));
