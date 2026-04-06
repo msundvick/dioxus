@@ -5,6 +5,11 @@ edition = "2021"
 
 [dependencies]
 dioxus-devtools = { workspace = true }
+notebook-macros = { path = "../notebook-macros" }
+
+[[bin]]
+name = "macro_demo"
+path = "src/bin/macro_demo.rs"
 
 [[bin]]
 name = "exp1_registry"

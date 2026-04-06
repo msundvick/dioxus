@@ -102,6 +102,7 @@ members = [
     "packages/subsecond/subsecond-tests/bin-dep-middle",
     "packages/subsecond/subsecond-tests/bin-transitive-dep",
     "packages/subsecond/subsecond-examples/notebook-ex",
+    "packages/subsecond/subsecond-examples/notebook-macros",
 
     # Full project examples
     "examples/01-app-demos/hackernews",

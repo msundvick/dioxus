@@ -1,11 +1,13 @@
 use dioxus_devtools::subsecond::HotFn;
-use std::sync::Arc; // The magic for reactive snapshots
-
-// use std::thread;
-// use std::time::Duration;
+use std::sync::Arc;
+use std::time::Duration;
 
 // =====================================================================
-// GENERATOR VIEW: The State Struct
+// GENERATOR VIEW: The State Structs
+// Pure data — no methods, no mutation. Cells are pure functions.
+// When a cell's output struct gains/loses fields, the runtime detects
+// the code change via ptr_address() and drops the cached Arc so the
+// new layout is never aliased with old memory.
 // =====================================================================
 #[derive(Debug)]
 pub struct Cell1State {
@@ -19,81 +21,99 @@ pub struct Cell2State {
 }
 
 // =====================================================================
-// GENERATOR VIEW: The Wrapped Cells
+// GENERATOR VIEW: The Cell Functions
+// Pure functions: inputs -> output state. No side effects on external
+// state. println! is fine for display; it doesn't affect reactivity.
 // =====================================================================
 
-// Cell 1 returns its state wrapped in an Arc.
 pub fn run_cell_1() -> Arc<Cell1State> {
-    println!("\n[Cell 1] 🔄 Executing (Heavy Task)...");
-
-    // --- USER CODE ---
+    println!("\n[Cell 1] Executing...");
     let data = vec![1, 2, 3, 4, 5];
     let multiplier = 10;
-    // -----------------
-
     Arc::new(Cell1State { data, multiplier })
 }
 
-// --- CELL 2 WRAPPER ---
-// The AST parser detects Cell 2 needs `data` and `multiplier`.
-// It maps them to the `state_1` reference.
+// Cell 2 explicitly declares its dependency on Cell1State via its signature.
+// The proc macro will auto-derive this dependency graph from parameter types.
 pub fn run_cell_2(state_1: Arc<Cell1State>) -> Arc<Cell2State> {
-    println!("[Execution] ⚡ Running Cell 2 (Fast calculation...)");
-
-    // The generator re-mapped the user's variables to the struct fields
+    println!("[Cell 2] Executing...");
     let data = &state_1.data;
     let multiplier = state_1.multiplier;
 
-    // ----------------- USER CODE START: CELL 2 -----------------
     // Try editing this math while the program is running!
-    // e.g., change `* multiplier` to `+ multiplier`
     let processed: Vec<i32> = data.iter().map(|x| x * multiplier).collect();
+    println!("[Cell 2] Output: {:?}", processed);
 
-    println!("Output: {:?}", processed);
-    // ------------------ USER CODE END: CELL 2 ------------------
     Arc::new(Cell2State { processed })
 }
+
 // =====================================================================
 // HOST RUNNER: The Reactive Loop
+// Generated from the dependency graph. Cells execute in topological
+// order. Modification detection uses ptr_address() — if a cell's
+// function pointer changes after a patch, it was modified.
 // =====================================================================
 
 fn main() {
     dioxus_devtools::connect_subsecond();
 
-    // We use Arc in the type signature. Arc is a concrete type,
-    // so HotFn doesn't lock any lifetimes!
     let mut cell_1_hot = HotFn::current(run_cell_1);
     let mut cell_2_hot = HotFn::current(run_cell_2);
 
-    let mut state_1_cache: Option<Arc<Cell1State>> = None;
+    // Cached outputs — Option so we can drop on layout change.
+    // Dropping the Arc before re-executing ensures we never pass
+    // old-layout memory into new-layout code.
+    let mut state_1: Option<Arc<Cell1State>> = None;
 
-    // Simulation flags
-    let mut cell_1_modified = true;
-    let mut cell_2_modified = true;
+    // Dirty flags — true means "needs re-execution"
+    let mut cell_1_dirty = true;
+    let mut cell_2_dirty = true;
+
+    // Snapshot ptrs from the previous iteration for change detection.
+    // After a patch lands, ptr_address() returns the new jump table entry.
+    let mut prev_cell1_ptr = cell_1_hot.ptr_address();
+    let mut prev_cell2_ptr = cell_2_hot.ptr_address();
 
     loop {
-        // 1. Reactive Update for Cell 1
-        if cell_1_modified || state_1_cache.is_none() {
-            state_1_cache = Some(cell_1_hot.call(()));
-            cell_1_modified = false;
-            cell_2_modified = true; // Dependency trigger!
+        // --- Modification detection ---
+        // Compare current function pointer addresses to previous snapshot.
+        // If they differ, the cell was patched since last iteration.
+        let curr_cell1_ptr = cell_1_hot.ptr_address();
+        let curr_cell2_ptr = cell_2_hot.ptr_address();
+
+        if curr_cell1_ptr != prev_cell1_ptr {
+            println!("[Runtime] Cell 1 was patched — invalidating cache and marking dirty.");
+            // Drop cached output so old-layout Arc is gone before re-execution.
+            state_1 = None;
+            cell_1_dirty = true;
+            cell_2_dirty = true; // propagate to all downstream cells
+            prev_cell1_ptr = curr_cell1_ptr;
         }
 
-        // 2. Reactive Update for Cell 2
-        if cell_2_modified {
-            if let Some(ref state) = state_1_cache {
-                // We clone the Arc (cheap pointer increment).
-                // No borrows are held across iterations!
-                cell_2_hot.call((Arc::clone(state),));
+        if curr_cell2_ptr != prev_cell2_ptr {
+            println!("[Runtime] Cell 2 was patched — marking dirty.");
+            cell_2_dirty = true;
+            prev_cell2_ptr = curr_cell2_ptr;
+        }
+
+        // --- Topological execution (cell 1 before cell 2) ---
+        // Cell 1 has no upstream dependencies.
+        if cell_1_dirty {
+            state_1 = Some(cell_1_hot.call(()));
+            cell_1_dirty = false;
+            // Always re-run downstream after cell 1 produces new output.
+            cell_2_dirty = true;
+        }
+
+        // Cell 2 depends on cell 1's output.
+        if cell_2_dirty {
+            if let Some(ref s) = state_1 {
+                cell_2_hot.call((Arc::clone(s),));
             }
-            cell_2_modified = false;
+            cell_2_dirty = false;
         }
 
-        // --- INTERACTIVE TEST ---
-        // Force Cell 2 to stay "live" so you can edit it and see patches,
-        // but keep Cell 1 memoized (it won't re-run).
-        // cell_2_modified = true;
-
-        // thread::sleep(Duration::from_secs(1));
+        // Brief pause so we don't busy-wait at 100% CPU between patches.
+        std::thread::sleep(Duration::from_millis(50));
     }
 }

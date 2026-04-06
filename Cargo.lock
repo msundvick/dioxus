@@ -10727,6 +10727,16 @@ name = "notebook-ex"
 version = "0.1.0"
 dependencies = [
  "dioxus-devtools",
+ "notebook-macros",
+]
+
+[[package]]
+name = "notebook-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
