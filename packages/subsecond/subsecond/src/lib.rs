@@ -1024,16 +1024,25 @@ impl_hot_function!(
 );
 
 pub mod notebook_engine {
-    use tokio::runtime::Runtime;
-
     use super::HotFn;
     use std::any::Any;
     use std::collections::HashMap;
-    use std::io::{self, Write};
+    use std::io::{self, Read, Write};
     use std::sync::{Mutex, OnceLock};
+    use tokio::runtime::Runtime;
 
+    // --- 1. GLOBALS & STATE ---
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     static CACHE: OnceLock<Mutex<HashMap<usize, Box<dyn Any + Send>>>> = OnceLock::new();
+
+    #[derive(Default, Clone)]
+    pub struct CellOutput {
+        pub stdout: String,
+        pub stderr: String,
+        pub display: Option<String>,
+    }
+
+    static OUTPUTS: OnceLock<Mutex<HashMap<usize, CellOutput>>> = OnceLock::new();
 
     pub fn get_runtime() -> &'static Runtime {
         RUNTIME.get_or_init(|| Runtime::new().expect("Failed to create Tokio runtime"))
@@ -1043,11 +1052,126 @@ pub mod notebook_engine {
         CACHE.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
+    pub fn get_outputs() -> &'static Mutex<HashMap<usize, CellOutput>> {
+        OUTPUTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    // --- 2. OUTPUT CAPTURE APIS ---
+    pub fn clear_output(idx: usize) {
+        let mut outs = get_outputs().lock().unwrap();
+        outs.insert(idx, CellOutput::default());
+    }
+
+    pub fn append_stdout(idx: usize, s: String) {
+        let mut outs = get_outputs().lock().unwrap();
+        outs.entry(idx).or_default().stdout.push_str(&s);
+    }
+
+    pub fn append_stderr(idx: usize, s: String) {
+        let mut outs = get_outputs().lock().unwrap();
+        outs.entry(idx).or_default().stderr.push_str(&s);
+    }
+
+    pub fn set_display(idx: usize, s: String) {
+        let mut outs = get_outputs().lock().unwrap();
+        outs.entry(idx).or_default().display = Some(s);
+    }
+
+    // --- 3. ROBUST OS PIPE HIJACKING ---
+    #[cfg(unix)]
+    pub mod os_capture {
+        use os_pipe::{pipe, PipeReader, PipeWriter};
+        use std::os::unix::io::AsRawFd;
+
+        pub struct Redirector {
+            orig_stdout: i32,
+            orig_stderr: i32,
+            stdout_tx: Option<PipeWriter>,
+            stderr_tx: Option<PipeWriter>,
+        }
+
+        pub struct Channels {
+            pub stdout_rx: PipeReader,
+            pub stderr_rx: PipeReader,
+        }
+
+        pub fn start() -> (Redirector, Channels) {
+            let (stdout_rx, stdout_tx) = pipe().unwrap();
+            let (stderr_rx, stderr_tx) = pipe().unwrap();
+
+            let orig_stdout;
+            let orig_stderr;
+
+            unsafe {
+                // Duplicate standard OS handles so we can restore them later
+                orig_stdout = libc::dup(libc::STDOUT_FILENO);
+                orig_stderr = libc::dup(libc::STDERR_FILENO);
+
+                // Overwrite the OS standard output to point to our Pipe Writers
+                libc::dup2(stdout_tx.as_raw_fd(), libc::STDOUT_FILENO);
+                libc::dup2(stderr_tx.as_raw_fd(), libc::STDERR_FILENO);
+            }
+
+            (
+                Redirector {
+                    orig_stdout,
+                    orig_stderr,
+                    stdout_tx: Some(stdout_tx),
+                    stderr_tx: Some(stderr_tx),
+                },
+                Channels {
+                    stdout_rx,
+                    stderr_rx,
+                },
+            )
+        }
+
+        impl Drop for Redirector {
+            fn drop(&mut self) {
+                // Drop our write-ends BEFORE restoring OS handles.
+                // This forces `read_to_string` on the read-ends to see an EOF and stop blocking!
+                self.stdout_tx.take();
+                self.stderr_tx.take();
+
+                unsafe {
+                    libc::dup2(self.orig_stdout, libc::STDOUT_FILENO);
+                    libc::dup2(self.orig_stderr, libc::STDERR_FILENO);
+                    libc::close(self.orig_stdout);
+                    libc::close(self.orig_stderr);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub mod os_capture {
+        use os_pipe::{pipe, PipeReader};
+        // Dummy fallback for Windows in this experiment, as Windows API requires `SetStdHandle`
+        pub struct Redirector {}
+        pub struct Channels {
+            pub stdout_rx: PipeReader,
+            pub stderr_rx: PipeReader,
+        }
+        pub fn start() -> (Redirector, Channels) {
+            let (stdout_rx, _) = pipe().unwrap();
+            let (stderr_rx, _) = pipe().unwrap();
+            (
+                Redirector {},
+                Channels {
+                    stdout_rx,
+                    stderr_rx,
+                },
+            )
+        }
+    }
+
+    // --- 4. MEMOIZATION & EXECUTION ---
     pub fn clean_cache(valid_cell_count: usize) {
         let mut cache = get_cache().lock().unwrap();
-        // Retain only cache entries whose index is strictly less than the current cell count.
-        // This drops the massive Arcs/Vectors of any cells the user deleted from the file!
         cache.retain(|&idx, _| idx < valid_cell_count);
+
+        let mut outs = get_outputs().lock().unwrap();
+        outs.retain(|&idx, _| idx < valid_cell_count);
     }
 
     pub fn memoize<T: Clone + Send + 'static>(
@@ -1055,24 +1179,18 @@ pub mod notebook_engine {
         is_dirty: bool,
         cell_logic: impl FnOnce() -> T,
     ) -> Result<T, ()> {
-        // 1. Check if we need to run, and immediately drop the lock
         let needs_run = {
             let cache = get_cache().lock().unwrap();
-
             if is_dirty {
                 true
             } else if let Some(cached_any) = cache.get(&cell_id) {
-                // CRITICAL FIX: Defensive Downcasting!
-                // If a user deletes a cell, all downstream cells shift their index.
-                // Or if a user adds/removes a `let` variable, the tuple type `T` changes.
-                // If the types don't match exactly, we MUST treat it as dirty!
                 if !cached_any.is::<T>() {
-                    true // Type signature changed! Force re-run.
+                    true
                 } else {
-                    false // Clean and type-safe. Use cache.
+                    false
                 }
             } else {
-                true // Not in cache
+                true
             }
         };
 
@@ -1086,40 +1204,82 @@ pub mod notebook_engine {
                 .clone());
         }
 
-        // 2. Run the code OUTSIDE the lock, catching any panics!
-        // AssertUnwindSafe is required because the cell closure captures variables.
+        clear_output(cell_id);
+
+        // Hijack the OS file descriptors
+        let (redirector, mut channels) = os_capture::start();
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell_logic()));
+
+        // CRITICAL: We must force Rust's internal `io::Stdout` buffer to flush its
+        // contents into the OS pipe before we yank the OS pipe away!
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+
+        // Dropping the redirector restores the host's terminal output and triggers EOF
+        drop(redirector);
+
+        // Slurp the intercepted bytes!
+        let mut out_str = String::new();
+        let _ = channels.stdout_rx.read_to_string(&mut out_str);
+        if !out_str.is_empty() {
+            append_stdout(cell_id, out_str);
+        }
+
+        let mut err_str = String::new();
+        let _ = channels.stderr_rx.read_to_string(&mut err_str);
+        if !err_str.is_empty() {
+            append_stderr(cell_id, err_str);
+        }
 
         match result {
             Ok(val) => {
-                // 3. If successful, re-acquire lock and cache the result
                 let mut cache = get_cache().lock().unwrap();
                 cache.insert(cell_id, Box::new(val.clone()));
                 Ok(val)
             }
             Err(_) => {
-                // The cell panicked!
-                // We return Err to tell the DAG to abort downstream execution.
+                append_stderr(cell_id, "\n[Runtime Error]: Cell Panicked!\n".to_string());
                 Err(())
             }
         }
     }
 
+    // --- 5. THE REPL LOOP ---
     pub fn run_interactive(notebook_fn: fn(Vec<bool>) -> usize) {
         println!("--- 📓 Notebook Engine Started ---");
 
         let mut notebook_hot = HotFn::current(notebook_fn);
-
-        // Start empty. The macro's `unwrap_or(true)` will handle the first run.
         let mut flags: Vec<bool> = Vec::new();
 
         loop {
-            // Call the boundary and get the current number of cells
             let cell_count = notebook_hot.call((flags.clone(),));
-
             clean_cache(cell_count);
 
-            // Resize the vector to match the compiled code exactly
+            println!("\n================ NOTEBOOK OUTPUT ================");
+            let outs = get_outputs().lock().unwrap();
+            for i in 0..cell_count {
+                if let Some(out) = outs.get(&i) {
+                    let has_stdout = !out.stdout.is_empty();
+                    let has_stderr = !out.stderr.is_empty();
+                    let has_display = out.display.is_some();
+
+                    if has_stdout || has_stderr || has_display {
+                        println!("--- Cell {} ---", i);
+                        if has_stdout {
+                            print!("{}", out.stdout);
+                        }
+                        if has_stderr {
+                            eprint!("{}", out.stderr);
+                        }
+                        if let Some(ref disp) = out.display {
+                            println!("Out[{}]: {}", i, disp);
+                        }
+                    }
+                }
+            }
+            println!("=================================================");
+
             flags.clear();
             flags.resize(cell_count, false);
 
@@ -1134,12 +1294,11 @@ pub mod notebook_engine {
                 flags.fill(true);
             } else if let Ok(idx) = cmd.parse::<usize>() {
                 if idx < cell_count {
-                    // Linear DAG Simulation: Mark this cell and all subsequent cells as dirty
                     for i in idx..cell_count {
                         flags[i] = true;
                     }
                 } else {
-                    println!("Index out of bounds. Notebook has {} cells.", cell_count);
+                    println!("Index out of bounds.");
                 }
             } else if !cmd.is_empty() {
                 println!("Invalid command.");

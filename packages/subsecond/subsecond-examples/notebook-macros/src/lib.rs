@@ -6,9 +6,6 @@ use syn::{Pat, Stmt};
 pub fn notebook(input: TokenStream) -> TokenStream {
     let input2 = proc_macro2::TokenStream::from(input);
 
-    // PRE-PASS: Count the total number of cells.
-    // We need this so that if a cell panics, we can early-return the CORRECT
-    // total cell count to the host engine, keeping its capacity perfectly in sync!
     let mut total_cells = 0usize;
     let mut pre_iter = input2.clone().into_iter().peekable();
     while let Some(tt) = pre_iter.next() {
@@ -74,23 +71,11 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                                         let span = syn::spanned::Spanned::span(expr);
                                         quote::quote_spanned! {span=>
                                             let __cell_res = #expr;
-                                            println!("Out[{}]: {:?}", #idx, __cell_res);
+                                            dioxus_devtools::subsecond::notebook_engine::set_display(#idx, std::format!("{:#?}", __cell_res));
                                         }
                                     } else {
                                         quote! {}
                                     };
-
-                                    // // 1. Find the span of the very last token the user typed
-                                    // let mut last_span = proc_macro2::Span::call_site();
-                                    // for tt in group_stream.clone() {
-                                    //     last_span = tt.span();
-                                    // }
-
-                                    // // 2. Hijack that span for our generated dummy tokens!
-                                    // // This prevents the error message from swallowing the whole macro.
-                                    // let mut semi =
-                                    //     proc_macro2::Punct::new(';', proc_macro2::Spacing::Alone);
-                                    // semi.set_span(last_span);
 
                                     let cell_gen = quote! {
                                         let is_dirty = flags.get(#idx).copied().unwrap_or(true);
@@ -106,8 +91,6 @@ pub fn notebook(input: TokenStream) -> TokenStream {
                                         let #export_tuple = match __memo_res {
                                             Ok(res) => res,
                                             Err(_) => {
-                                                println!("❌ [Cell {}] Execution aborted due to panic.", #idx);
-                                                // CRITICAL FIX: We return the pre-calculated total_cells!
                                                 return #total_cells;
                                             }
                                         };
