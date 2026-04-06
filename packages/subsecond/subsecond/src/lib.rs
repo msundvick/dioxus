@@ -1022,3 +1022,78 @@ impl_hot_function!(
     (Fn8Marker, A, B, C, D, E, F, G, H),
     (Fn9Marker, A, B, C, D, E, F, G, H, I)
 );
+
+pub mod notebook_engine {
+    use super::HotFn;
+    use std::any::Any;
+    use std::collections::HashMap;
+    use std::io::{self, Write};
+    use std::sync::{Mutex, OnceLock};
+
+    // The cache uses `usize` instead of strings now! Blazing fast.
+    static CACHE: OnceLock<Mutex<HashMap<usize, Box<dyn Any + Send>>>> = OnceLock::new();
+
+    pub fn get_cache() -> &'static Mutex<HashMap<usize, Box<dyn Any + Send>>> {
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn memoize<T: Clone + Send + 'static>(
+        cell_id: usize,
+        is_dirty: bool,
+        cell_logic: impl FnOnce() -> T,
+    ) -> T {
+        let mut cache = get_cache().lock().unwrap();
+        if is_dirty || !cache.contains_key(&cell_id) {
+            let result = cell_logic();
+            cache.insert(cell_id, Box::new(result.clone()));
+            result
+        } else {
+            cache
+                .get(&cell_id)
+                .unwrap()
+                .downcast_ref::<T>()
+                .unwrap()
+                .clone()
+        }
+    }
+
+    pub fn run_interactive(notebook_fn: fn(Vec<bool>) -> usize) {
+        println!("--- 📓 Notebook Engine Started ---");
+
+        let mut notebook_hot = HotFn::current(notebook_fn);
+
+        // Start empty. The macro's `unwrap_or(true)` will handle the first run.
+        let mut flags: Vec<bool> = Vec::new();
+
+        loop {
+            // Call the boundary and get the current number of cells
+            let cell_count = notebook_hot.call((flags.clone(),));
+
+            // Resize the vector to match the compiled code exactly
+            flags.clear();
+            flags.resize(cell_count, false);
+
+            print!("\n[{} cells loaded] > Run cell number: ", cell_count);
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let cmd = input.trim();
+
+            if cmd == "all" {
+                flags.fill(true);
+            } else if let Ok(idx) = cmd.parse::<usize>() {
+                if idx < cell_count {
+                    // Linear DAG Simulation: Mark this cell and all subsequent cells as dirty
+                    for i in idx..cell_count {
+                        flags[i] = true;
+                    }
+                } else {
+                    println!("Index out of bounds. Notebook has {} cells.", cell_count);
+                }
+            } else if !cmd.is_empty() {
+                println!("Invalid command.");
+            }
+        }
+    }
+}
