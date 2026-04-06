@@ -5,15 +5,16 @@ use std::sync::Arc;
 
 notebook! {
     // Cell 0
+    cell {
+        println!("\n[Cell 0] Fetching dataset...");
+        let multiplier = 10;
+        let data = Arc::new(vec![1, 2, 3, 4, 6]);
+        // data.to_owned
+    }
     global {
         struct Hi {
             a: i64,
         }
-    }
-    cell {
-        println!("\n[Cell 0] Fetching dataset...");
-        let data = Arc::new(vec![1, 2, 3, 4, 6]);
-        let multiplier = 10;
     }
 
     // Cell 1
