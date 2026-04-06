@@ -327,8 +327,8 @@ impl Output {
                 }
             }
 
-            // Toggle stdin forwarding mode for CLI app interaction
-            KeyCode::Char('s') => {
+            // Enter activates stdin forwarding mode for CLI app interaction
+            KeyCode::Enter => {
                 self.toggle_stdin_mode()?;
             }
 
@@ -360,8 +360,8 @@ impl Output {
     /// Handle a keypress when stdin forwarding mode is active.
     fn handle_stdin_mode_keypress(&mut self, key: KeyEvent) -> Result<Option<ServeUpdate>> {
         match key.code {
-            // Escape or 's' exits stdin mode without sending anything
-            KeyCode::Esc | KeyCode::Char('s') if key.modifiers.is_empty() => {
+            // Escape exits stdin mode without sending anything
+            KeyCode::Esc => {
                 self.toggle_stdin_mode()?;
             }
             // Enter sends the buffered line to the child process

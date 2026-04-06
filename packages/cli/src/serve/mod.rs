@@ -55,7 +55,8 @@ pub(crate) async fn serve_all(args: ServeArgs, tracer: &TraceController) -> Resu
                 • Press {GLOW_STYLE}`r`{GLOW_STYLE:#} to rebuild the app
                 • Press {GLOW_STYLE}`p`{GLOW_STYLE:#} to toggle automatic rebuilds
                 • Press {GLOW_STYLE}`v`{GLOW_STYLE:#} to toggle verbose logging
-                • Press {GLOW_STYLE}`/`{GLOW_STYLE:#} for more commands and shortcuts{extra}
+                • Press {GLOW_STYLE}`/`{GLOW_STYLE:#} for more commands and shortcuts
+                • Press {GLOW_STYLE}`enter`{GLOW_STYLE:#} to toggle stdin forwarding to the app (exit with {GLOW_STYLE}`esc`{GLOW_STYLE:#}){extra}
                ----------------------------------------------------------------"#,
         binname = builder.client.build.executable_name(),
         extra = if builder.client.build.using_dioxus_explicitly {
