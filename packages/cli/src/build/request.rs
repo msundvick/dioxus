@@ -2630,6 +2630,8 @@ impl BuildRequest {
     /// This is basically just stripping away the rlibs and other libraries that will be satisfied
     /// by our stub step.
     fn thin_link_args(&self, original_args: &[String]) -> Result<Vec<String>> {
+        // DIAGNOSTIC: confirm whether this path is exercised for cdylib targets
+        tracing::info!("thin_link_args called: is_cdylib={}", self.is_cdylib());
         let mut out_args = vec![];
 
         match self.linker_flavor() {
@@ -2997,6 +2999,13 @@ impl BuildRequest {
 
         compiler_rlibs.dedup();
 
+        // DIAGNOSTIC: report whether the archive was populated and what path it lives at
+        tracing::info!(
+            "Fat archive: has_contents={} path={}",
+            archive_has_contents,
+            out_ar_path.display()
+        );
+
         // We're going to replace the first rlib in the args with our fat archive
         // And then remove the rest of the rlibs
         //
@@ -3123,7 +3132,12 @@ impl BuildRequest {
         // And now we can run the linker with our new args
         let linker = self.select_linker()?;
 
-        tracing::trace!("Fat linking with args: {:?} {:#?}", linker, args);
+        // DIAGNOSTIC: log is_cdylib and the full arg list before any command-file wrapping
+        tracing::info!(
+            "Fat linking: is_cdylib={} linker={:?} arg_count={}",
+            self.is_cdylib(), linker, args.len()
+        );
+        tracing::info!("Fat link args:\n{}", args.join("\n"));
         tracing::trace!("Fat linking with env:");
         for e in rustc_args.envs.iter() {
             tracing::trace!("  {}={}", e.0, e.1);
@@ -3133,7 +3147,9 @@ impl BuildRequest {
         let mut out_args = args.clone();
         if cfg!(windows) {
             let cmd_contents: String = out_args.iter().map(|f| format!("\"{f}\"")).join(" ");
-            std::fs::write(self.windows_command_file(), cmd_contents)
+            // DIAGNOSTIC: show verbatim what lld-link will receive
+            tracing::info!("Windows command file content:\n{}", cmd_contents);
+            std::fs::write(self.windows_command_file(), &cmd_contents)
                 .context("Failed to write linker command file")?;
             out_args = vec![format!("@{}", self.windows_command_file().display())];
         }

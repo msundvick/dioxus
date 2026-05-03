@@ -142,6 +142,12 @@ impl LinkAction {
         // todo: we might need to encode these as escaped shell words in case newlines are passed
         std::fs::write(&self.link_args_file, args.join("\n"))?;
 
+        // DIAGNOSTIC: dump every saved arg so we can see what the wrapper captured on Windows
+        eprintln!("[dx-link] saved {} args to {:?}", args.len(), self.link_args_file);
+        for arg in &args {
+            eprintln!("[dx-link]   {arg}");
+        }
+
         // If there's a linker specified, we use that. Otherwise, we write a dummy object file to satisfy
         // any post-processing steps that rustc does.
         match self.linker {
