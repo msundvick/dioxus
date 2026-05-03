@@ -45,7 +45,6 @@ jobs:
           key: "subsecond-e2e-${{ runner.os }}"
           cache-all-crates: "true"
           cache-workspace-crates: "true"
-          cache-provider: "warpbuild"
 
       - name: Build dx
         run: cargo build --package dioxus-cli
@@ -66,5 +65,3 @@ jobs:
       - name: Run subsecond e2e tests
         run: >
           python packages/subsecond/subsecond-tests/e2e.py
-          --startup-timeout 300
-          --timeout 90

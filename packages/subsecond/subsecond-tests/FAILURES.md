@@ -5,31 +5,28 @@ Tests are expected to continue running; these failures are not masked.
 
 ---
 
-## macOS: cdylib tests fail — CLI attempts fat-binary link for `--lib` builds
+## macOS: cdylib tests fail — fat-binary link exports `_main` for cdylib targets (fixed)
+
+**Status: fixed** in `packages/cli/src/build/request.rs` (`run_fat_link`).
 
 **Failing tests:** `cdylib-basic`, `cdylib-tls`, `cdylib-autoconnect`, `cdylib-cxx`
 
 **Symptom:**
 ```
 Failed to generate fat binary: Undefined symbols for architecture arm64:
-  "_main", referenced from:
-      <initial-undefines>
+  "_main", referenced from: <initial-undefines>
 ld: symbol(s) not found for architecture arm64
-clang: error: linker command failed with exit code 1
-Build failed: No such file or directory (os error 2)
 ```
 
-**Root cause:** When `dx serve --lib --hot-patch` is invoked on macOS (arm64), the CLI
-invokes `lipo` (or equivalent) to produce a universal/"fat" binary as a post-link step.
-This step expects a `_main` symbol, which a `cdylib` intentionally does not have.
-The post-link fat-binary step should be skipped entirely for `TargetKind::CDyLib`.
+**Root cause:** `run_fat_link()` unconditionally passed `-Wl,-exported_symbol,_main`
+(Darwin) / `--export-dynamic-symbol,main` (GNU) / `/EXPORT:main` (MSVC) to the linker
+so that the subsecond runtime can locate `main` as its ASLR reference point. For
+`cdylib` targets there is no `main` function, so the Darwin linker refused with
+"undefined symbol". The flags were simply emitted for every target kind.
 
-**Location:** dioxus-cli build pipeline, somewhere in the post-link/`lipo` path for macOS.
-
-**Workaround:** None at the test level. Requires a fix in the CLI to gate the fat-binary
-step on target kind.
-
-**Platform:** macOS arm64 (CI: `macos-latest`). Linux and Windows unaffected.
+**Fix:** Guarded the `main` export flags behind `!self.is_cdylib()`. `/HIGHENTROPYVA:NO`
+(needed for ASLR overflow prevention on MSVC) is kept unconditionally since it applies
+to both binary and cdylib targets.
 
 ---
 

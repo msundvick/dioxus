@@ -3048,23 +3048,27 @@ impl BuildRequest {
             }
         }
 
-        // Add custom args to the linkers
-        match self.linker_flavor() {
-            LinkerFlavor::Gnu => {
-                // Export `main` so subsecond can use it for a reference point
-                args.push("-Wl,--export-dynamic-symbol,main".to_string());
+        // Add custom args to the linkers.
+        // cdylib targets have no `main`; exporting it causes a linker error, so those flags are
+        // skipped. /HIGHENTROPYVA:NO (ASLR) applies to both binary and cdylib on MSVC.
+        if matches!(self.linker_flavor(), LinkerFlavor::Msvc) {
+            args.push("/HIGHENTROPYVA:NO".to_string());
+        }
+        if !self.is_cdylib() {
+            match self.linker_flavor() {
+                LinkerFlavor::Gnu => {
+                    // Export `main` so subsecond can use it for a reference point
+                    args.push("-Wl,--export-dynamic-symbol,main".to_string());
+                }
+                LinkerFlavor::Darwin => {
+                    args.push("-Wl,-exported_symbol,_main".to_string());
+                }
+                LinkerFlavor::Msvc => {
+                    // Export `main` so subsecond can use it for a reference point
+                    args.push("/EXPORT:main".to_string());
+                }
+                LinkerFlavor::WasmLld | LinkerFlavor::Unsupported => {}
             }
-            LinkerFlavor::Darwin => {
-                args.push("-Wl,-exported_symbol,_main".to_string());
-            }
-            LinkerFlavor::Msvc => {
-                // Prevent alsr from overflowing 32 bits
-                args.push("/HIGHENTROPYVA:NO".to_string());
-
-                // Export `main` so subsecond can use it for a reference point
-                args.push("/EXPORT:main".to_string());
-            }
-            LinkerFlavor::WasmLld | LinkerFlavor::Unsupported => {}
         }
 
         // We also need to remove the `-o` flag since we want the linker output to end up in the
