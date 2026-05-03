@@ -1328,12 +1328,16 @@ impl BuildRequest {
                     // `executable` is None; the shared library path is in `filenames`.
                     output_location = artifact.executable.map(Into::into).or_else(|| {
                         if self.is_cdylib() && artifact.target.name == self.executable_name() {
-                            artifact.filenames.into_iter().find(|f| {
-                                matches!(
-                                    f.extension(),
-                                    Some("so") | Some("dylib") | Some("dll")
-                                )
-                            }).map(Into::into)
+                            artifact
+                                .filenames
+                                .into_iter()
+                                .find(|f| {
+                                    matches!(
+                                        f.extension(),
+                                        Some("so") | Some("dylib") | Some("dll")
+                                    )
+                                })
+                                .map(Into::into)
                         } else {
                             None
                         }
@@ -1499,7 +1503,10 @@ impl BuildRequest {
             let crate_name = crates_to_compile[idx].clone();
             idx += 1;
 
-            if !compiled.insert(crate_name.clone()) || crate_name == tip_name || crate_name == tip_package_name {
+            if !compiled.insert(crate_name.clone())
+                || crate_name == tip_name
+                || crate_name == tip_package_name
+            {
                 continue;
             }
 
@@ -2769,9 +2776,13 @@ impl BuildRequest {
                     "/DLL".to_string(),
                     "/DEBUG".to_string(),
                     "/PDBALTPATH:%_PDB%".to_string(),
-                    "/EXPORT:main".to_string(),
                     "/HIGHENTROPYVA:NO".to_string(),
                 ]);
+                if self.is_cdylib() {
+                    out_args.push("/EXPORT:__SUBSECOND_ASLR_REFERENCE".to_string());
+                } else {
+                    out_args.push("/EXPORT:main".to_string());
+                }
             }
 
             LinkerFlavor::Unsupported => {
@@ -2800,6 +2811,8 @@ impl BuildRequest {
                 out_args.push(vale);
             }
         }
+
+        tracing::info!("Thin link out args {out_args:?}");
 
         Ok(out_args)
     }
@@ -3135,7 +3148,9 @@ impl BuildRequest {
         // DIAGNOSTIC: log is_cdylib and the full arg list before any command-file wrapping
         tracing::info!(
             "Fat linking: is_cdylib={} linker={:?} arg_count={}",
-            self.is_cdylib(), linker, args.len()
+            self.is_cdylib(),
+            linker,
+            args.len()
         );
         tracing::info!("Fat link args:\n{}", args.join("\n"));
         tracing::trace!("Fat linking with env:");
@@ -3223,7 +3238,7 @@ impl BuildRequest {
         // - windows requires the pdb crate and pdb files
         // - nix requires the object crate
         let mut jump_table = match triple.operating_system {
-            OperatingSystem::Windows => create_windows_jump_table(patch, cache)?,
+            OperatingSystem::Windows => create_windows_jump_table(patch, triple, cache, self.is_cdylib())?,
             _ if triple.architecture == Architecture::Wasm32 => {
                 create_wasm_jump_table(patch, cache)?
             }
@@ -3522,6 +3537,7 @@ impl BuildRequest {
 
         // On windows, we pass /SUBSYSTEM:WINDOWS to prevent a console from appearing
         if matches!(self.bundle, BundleFormat::Windows)
+            && !self.is_cdylib()
             && !self
                 .rustflags
                 .flags

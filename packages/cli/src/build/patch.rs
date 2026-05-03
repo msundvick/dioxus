@@ -345,7 +345,12 @@ impl HotpatchModuleCache {
     }
 }
 
-pub fn create_windows_jump_table(patch: &Path, cache: &HotpatchModuleCache) -> Result<JumpTable> {
+pub fn create_windows_jump_table(
+    patch: &Path,
+    triple: &Triple,
+    cache: &HotpatchModuleCache,
+    is_cdylib: bool,
+) -> Result<JumpTable> {
     use pdb::FallibleIterator;
     let old_name_to_addr = &cache.symbol_table;
 
@@ -371,15 +376,25 @@ pub fn create_windows_jump_table(patch: &Path, cache: &HotpatchModuleCache) -> R
         }
     }
 
+    let sentinel = aslr_sentinel(triple, is_cdylib);
+
     let new_base_address = new_name_to_addr
-        .get("main")
+        .get(sentinel)
         .cloned()
-        .context("failed to find 'main' symbol in patch")?;
+        .context(if is_cdylib {
+            "failed to find ASLR sentinel symbol in patch\n- are debug symbols enabled?\n- is dioxus_devtools::subsecond::hotpatch_anchor!(); included?"
+        } else {
+            "failed to find 'main' symbol in patch — are debug symbols enabled?"
+        })?;
 
     let aslr_reference = old_name_to_addr
-        .get("main")
+        .get(sentinel)
         .map(|s| s.address)
-        .context("failed to find '_main' symbol in original module")?;
+        .context(if is_cdylib {
+            "failed to find ASLR sentinel symbol in original module\n- are debug symbols enabled?\n- is dioxus_devtools::subsecond::hotpatch_anchor!(); included?"
+        } else {
+            "failed to find 'main' symbol in original module — are debug symbols enabled?"
+        })?;
 
     Ok(JumpTable {
         lib: patch.to_path_buf(),
