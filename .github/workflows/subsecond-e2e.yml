@@ -3,16 +3,16 @@ name: Subsecond E2E
 on:
   push:
     paths:
-      - 'packages/subsecond/**'
-      - 'packages/cli/**'
-      - 'packages/dioxus-devtools/**'
-      - '.github/workflows/subsecond-e2e.yml'
+      - "packages/subsecond/**"
+      - "packages/cli/**"
+      - "packages/dioxus-devtools/**"
+      - ".github/workflows/subsecond-e2e.yml"
   pull_request:
     paths:
-      - 'packages/subsecond/**'
-      - 'packages/cli/**'
-      - 'packages/dioxus-devtools/**'
-      - '.github/workflows/subsecond-e2e.yml'
+      - "packages/subsecond/**"
+      - "packages/cli/**"
+      - "packages/dioxus-devtools/**"
+      - ".github/workflows/subsecond-e2e.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,10 +31,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: warp-ubuntu-latest-x64-4x,  name: Linux   }
-          - { os: warp-macos-latest-arm64-6x,  name: macOS   }
-          - { os: warp-windows-2025-x64-8x,    name: Windows }
-
+          - { os: ubuntu-latest, name: Linux }
+          - { os: macos-latest, name: macOS }
+          - { os: windows-2025, name: Windows }
     steps:
       - uses: actions/checkout@v5
 
