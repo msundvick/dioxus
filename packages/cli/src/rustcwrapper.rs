@@ -69,8 +69,29 @@ fn has_linking_args() -> bool {
 ///
 /// <https://doc.rust-lang.org/cargo/reference/config.html#buildrustc>
 pub fn run_rustc() -> ExitCode {
+    let all_args: Vec<_> = args().collect();
+
+    // DIAGNOSTIC: write every wrapper invocation to a temp file so it's visible regardless of
+    // how cargo routes stderr. Check %TEMP%\dx-rustc-wrapper.log after a build.
+    let has_link = has_linking_args();
+    {
+        use std::io::Write;
+        let log_path = std::env::temp_dir().join("dx-rustc-wrapper.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let crate_name = all_args.iter().skip_while(|a| *a != "--crate-name").nth(1).map(|s| s.as_str()).unwrap_or("?");
+            let crate_type = all_args.iter().skip_while(|a| *a != "--crate-type").nth(1).map(|s| s.as_str()).unwrap_or("?");
+            let _ = writeln!(f, "has_linking_args={has_link} crate_name={crate_name} crate_type={crate_type} argc={}", all_args.len());
+            // If has_linking_args fired, dump the first 10 args so we can see why
+            if has_link {
+                for arg in all_args.iter().take(10) {
+                    let _ = writeln!(f, "  arg: {arg}");
+                }
+            }
+        }
+    }
+
     // If we are being asked to link, delegate to the linker action.
-    if has_linking_args() {
+    if has_link {
         return crate::link::LinkAction::from_env()
             .expect("Linker action not found")
             .run_link();
@@ -82,7 +103,7 @@ pub fn run_rustc() -> ExitCode {
 
     // Cargo invokes a workspace wrapper like: `wrapper-name rustc [args...]`
     // We skip our own executable name (`wrapper-name`) to get the args passed to us.
-    let captured_args = args().skip(1).collect::<Vec<_>>();
+    let captured_args = all_args.into_iter().skip(1).collect::<Vec<_>>();
 
     let rustc_args = RustcArgs {
         args: captured_args.clone(),
@@ -123,11 +144,9 @@ pub fn run_rustc() -> ExitCode {
                 _ => "bin", // proc-macro, dylib, etc. — treat as bin
             };
 
-            std::fs::write(
-                args_dir.join(format!("{crate_name}.{suffix}.json")),
-                &serialized_args,
-            )
-            .expect("Failed to write rustc args to file");
+            let out_path = args_dir.join(format!("{crate_name}.{suffix}.json"));
+            std::fs::write(&out_path, &serialized_args)
+                .expect("Failed to write rustc args to file");
         }
     }
 
