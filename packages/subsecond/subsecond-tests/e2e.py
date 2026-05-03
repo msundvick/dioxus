@@ -175,19 +175,33 @@ class ManagedProcess:
             await self._reader_task
         except asyncio.CancelledError:
             pass
-        try:
-            pgid = os.getpgid(self.proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            pass
+
+        if sys.platform == "win32":
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                pgid = os.getpgid(self.proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+
         try:
             await asyncio.wait_for(self.proc.wait(), timeout=5)
         except asyncio.TimeoutError:
-            try:
-                pgid = os.getpgid(self.proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
+            if sys.platform != "win32":
+                try:
+                    pgid = os.getpgid(self.proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+            self.proc.kill()
 
 
 # ── File editing ───────────────────────────────────────────────────────────────

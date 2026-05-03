@@ -1,0 +1,67 @@
+name: Subsecond E2E
+
+on:
+  push:
+    paths:
+      - 'packages/subsecond/**'
+      - 'packages/cli/**'
+      - 'packages/dioxus-devtools/**'
+      - '.github/workflows/subsecond-e2e.yml'
+  pull_request:
+    paths:
+      - 'packages/subsecond/**'
+      - 'packages/cli/**'
+      - 'packages/dioxus-devtools/**'
+      - '.github/workflows/subsecond-e2e.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 1
+
+jobs:
+  subsecond-e2e:
+    name: "Subsecond E2E | ${{ matrix.name }}"
+    runs-on: ${{ matrix.os }}
+    if: github.event.pull_request.draft == false
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: warp-ubuntu-latest-x64-4x,  name: Linux   }
+          - { os: warp-macos-latest-arm64-6x,  name: macOS   }
+          - { os: warp-windows-2025-x64-8x,    name: Windows }
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "subsecond-e2e-${{ runner.os }}"
+          cache-all-crates: "true"
+          cache-workspace-crates: "true"
+          cache-provider: "warpbuild"
+
+      - name: Build dx
+        run: cargo build --package dioxus-cli
+
+      - name: Set DX path (Unix)
+        if: runner.os != 'Windows'
+        run: echo "DX=${{ github.workspace }}/target/debug/dx" >> $GITHUB_ENV
+
+      - name: Set DX path (Windows)
+        if: runner.os == 'Windows'
+        run: echo "DX=${{ github.workspace }}/target/debug/dx.exe" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Run subsecond e2e tests
+        run: >
+          python packages/subsecond/subsecond-tests/e2e.py
+          --startup-timeout 300
+          --timeout 90
