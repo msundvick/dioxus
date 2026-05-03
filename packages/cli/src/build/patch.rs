@@ -1615,7 +1615,16 @@ fn parse_module_with_ids(bindgened: &[u8]) -> Result<ParsedModule<'_>> {
 /// on Darwin).
 fn aslr_sentinel(triple: &Triple, is_cdylib: bool) -> &'static str {
     if is_cdylib {
-        return "__SUBSECOND_ASLR_REFERENCE";
+        // On Darwin the C ABI convention prefixes every symbol with `_`, so
+        // Rust's `__SUBSECOND_ASLR_REFERENCE` lands in the Mach-O nlist as
+        // `___SUBSECOND_ASLR_REFERENCE` (three underscores).  On ELF/COFF
+        // there is no such prefix so two underscores are correct.
+        return match triple.operating_system {
+            OperatingSystem::MacOSX(_) | OperatingSystem::Darwin(_) | OperatingSystem::IOS(_) => {
+                "___SUBSECOND_ASLR_REFERENCE"
+            }
+            _ => "__SUBSECOND_ASLR_REFERENCE",
+        };
     }
     match triple.operating_system {
         // The symbol in the symtab is called "_main" but in the dysymtab it is called "main"
@@ -1659,15 +1668,15 @@ mod tests {
     }
 
     #[test]
-    fn sentinel_cdylib_ignores_platform() {
+    fn sentinel_cdylib_uses_platform_prefix() {
         assert_eq!(
             aslr_sentinel(&triple("x86_64-unknown-linux-gnu"), true),
             "__SUBSECOND_ASLR_REFERENCE"
         );
         assert_eq!(
             aslr_sentinel(&triple("aarch64-apple-darwin"), true),
-            "__SUBSECOND_ASLR_REFERENCE",
-            "cdylib sentinel must not use _main even on Darwin"
+            "___SUBSECOND_ASLR_REFERENCE",
+            "cdylib sentinel on Darwin gets leading underscore like all C symbols"
         );
         assert_eq!(
             aslr_sentinel(&triple("x86_64-pc-windows-msvc"), true),
