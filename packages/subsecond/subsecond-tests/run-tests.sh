@@ -56,6 +56,8 @@ PACKAGES=(
   cdylib-tls-host
   cdylib-autoconnect
   cdylib-autoconnect-host
+  cdylib-cxx
+  cdylib-cxx-host
   bin-basic
   bin-dep
   bin-multi-crate
@@ -103,7 +105,7 @@ run_tests dioxus-cli
 # ─── 3. cdylib builds ─────────────────────────────────────────────────────────
 section "cdylib builds"
 
-for pkg in cdylib-basic cdylib-tls cdylib-autoconnect; do
+for pkg in cdylib-basic cdylib-tls cdylib-autoconnect cdylib-cxx; do
   if cargo build -p "$pkg" --quiet 2>/dev/null; then
     pass "cargo build $pkg"
   else
@@ -114,7 +116,7 @@ done
 # ─── 4. Host builds ───────────────────────────────────────────────────────────
 section "host binary builds"
 
-for pkg in cdylib-basic-host cdylib-tls-host cdylib-autoconnect-host bin-basic bin-multi-crate bin-transitive-dep subsecond-tls-harness; do
+for pkg in cdylib-basic-host cdylib-tls-host cdylib-autoconnect-host cdylib-cxx-host bin-basic bin-multi-crate bin-transitive-dep subsecond-tls-harness; do
   if cargo build -p "$pkg" --quiet 2>/dev/null; then
     pass "cargo build $pkg"
   else

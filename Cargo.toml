@@ -95,6 +95,8 @@ members = [
     "packages/subsecond/subsecond-tests/cdylib-tls-host",
     "packages/subsecond/subsecond-tests/cdylib-autoconnect",
     "packages/subsecond/subsecond-tests/cdylib-autoconnect-host",
+    "packages/subsecond/subsecond-tests/cdylib-cxx",
+    "packages/subsecond/subsecond-tests/cdylib-cxx-host",
     "packages/subsecond/subsecond-tests/bin-basic",
     "packages/subsecond/subsecond-tests/bin-dep",
     "packages/subsecond/subsecond-tests/bin-multi-crate",

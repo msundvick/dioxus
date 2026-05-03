@@ -35,6 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+# On Windows the default console codec (cp1252) can't encode box-drawing chars.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -342,19 +346,36 @@ TESTS: list[TestSpec] = [
     ),
 
     TestSpec(
+        name="cdylib-cxx",
+        description="cxx cdylib + compile_as_shared_lib: hot patch through cxx bridge",
+        devserver_pkg="cdylib-cxx",
+        devserver_flags=["--lib"],
+        host_pkg="cdylib-cxx-host",
+        initial_pattern=r"compute\(21\) = 42",
+        edits=[
+            FileEdit(
+                path=Path("packages/subsecond/subsecond-tests/cdylib-cxx/src/lib.rs"),
+                old="x * 2",
+                new="x * 3",
+            )
+        ],
+        patched_pattern=r"compute\(21\) = 63",
+    ),
+
+    TestSpec(
         name="bin-basic",
         description="Single-crate binary: patch propagates without restart",
         devserver_pkg="bin-basic",
         devserver_flags=[],
-        initial_pattern=r"Hello from bin-basic v1",
+        initial_pattern=r"Captured state2 - x: 10",
         edits=[
             FileEdit(
                 path=Path("packages/subsecond/subsecond-tests/bin-basic/src/main.rs"),
-                old='"Hello from bin-basic v1"',
-                new='"Hello from bin-basic v2"',
+                old='"Captured state2 - x: {}, y: {} {z}"',
+                new='"Captured state3 - x: {}, y: {} {z}"',
             )
         ],
-        patched_pattern=r"Hello from bin-basic v2",
+        patched_pattern=r"Captured state3 - x: 10",
     ),
 
     TestSpec(
