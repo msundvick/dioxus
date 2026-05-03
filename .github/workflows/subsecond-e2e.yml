@@ -49,6 +49,10 @@ jobs:
 
       - name: Build dx
         run: cargo build --package dioxus-cli
+        env:
+          # Windows default main-thread stack (1 MB) overflows on debug dx builds.
+          # 8 MB matches the Linux/macOS default.
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C link-arg=/STACK:8388608' || '' }}
 
       - name: Set DX path (Unix)
         if: runner.os != 'Windows'
