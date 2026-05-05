@@ -69,8 +69,61 @@ fn has_linking_args() -> bool {
 ///
 /// <https://doc.rust-lang.org/cargo/reference/config.html#buildrustc>
 pub fn run_rustc() -> ExitCode {
+    let is_linking = has_linking_args();
+
+    // Log every wrapper invocation so we can see if cdylib_cxx is reached and which branch it takes.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true) // Open the file in append mode
+        .create(true) // Create the file if it doesn't exist
+        .open("rustcwrapper.log")
+        .unwrap();
+    use std::io::Write;
+
+    {
+        let raw: Vec<_> = args().collect();
+        let crate_name_dbg = raw
+            .iter()
+            .skip_while(|a| *a != "--crate-name")
+            .nth(1)
+            .map(|s| s.as_str())
+            .unwrap_or("<none>");
+        let crate_type_dbg = raw
+            .iter()
+            .skip_while(|a| *a != "--crate-type")
+            .nth(1)
+            .map(|s| s.as_str())
+            .unwrap_or("<none>");
+        writeln!(
+            file,
+            "[rustc-wrapper] crate={crate_name_dbg} type={crate_type_dbg} is_linking={is_linking} total_args={}",
+            raw.len()
+        ).unwrap();
+        // When there's no crate name, log the full args AND any argfile contents.
+        if crate_name_dbg == "<none>" {
+            writeln!(file, "[rustc-wrapper] full_args={:?}", raw).unwrap();
+            for arg in &raw {
+                if let Some(path_str) = arg.strip_prefix('@') {
+                    if let Ok(bytes) = std::fs::read(path_str) {
+                        let content = String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
+                            let u16s: Vec<u16> = bytes
+                                .chunks_exact(2)
+                                .map(|a| u16::from_le_bytes([a[0], a[1]]))
+                                .collect();
+                            String::from_utf16_lossy(&u16s).to_owned()
+                        });
+                        writeln!(
+                            file,
+                            "[rustc-wrapper] argfile {path_str} contents:\n{content}"
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
     // If we are being asked to link, delegate to the linker action.
-    if has_linking_args() {
+    if is_linking {
         return crate::link::LinkAction::from_env()
             .expect("Linker action not found")
             .run_link();
@@ -84,8 +137,40 @@ pub fn run_rustc() -> ExitCode {
     // We skip our own executable name (`wrapper-name`) to get the args passed to us.
     let captured_args = args().skip(1).collect::<Vec<_>>();
 
+    // Expand any @argfile entries so we can extract metadata like crate name/type.
+    // Cargo uses response files on Windows when the command line would exceed the OS limit
+    // (e.g. when a build script emits many /EXPORT: linker args). The @argfile is a temp
+    // file that exists now but may be gone by the time run_fat_link reads the serialized JSON,
+    // so we store the expanded form.
+    let expanded_args: Vec<String> = captured_args
+        .iter()
+        .flat_map(|arg| {
+            if let Some(path_str) = arg.strip_prefix('@') {
+                if let Ok(bytes) = std::fs::read(path_str) {
+                    let content = String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
+                        let u16s: Vec<u16> = bytes
+                            .chunks_exact(2)
+                            .map(|a| u16::from_le_bytes([a[0], a[1]]))
+                            .collect();
+                        String::from_utf16_lossy(&u16s).to_owned()
+                    });
+                    let mut content = content;
+                    if content.starts_with('\u{FEFF}') {
+                        content.remove(0);
+                    }
+                    return content
+                        .lines()
+                        .map(|l| l.trim().trim_matches('"').to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect::<Vec<_>>();
+                }
+            }
+            vec![arg.clone()]
+        })
+        .collect();
+
     let rustc_args = RustcArgs {
-        args: captured_args.clone(),
+        args: expanded_args.clone(),
         envs: vars().collect::<_>(),
         link_args: Default::default(),
     };
@@ -123,11 +208,10 @@ pub fn run_rustc() -> ExitCode {
                 _ => "bin", // proc-macro, dylib, etc. — treat as bin
             };
 
-            std::fs::write(
-                args_dir.join(format!("{crate_name}.{suffix}.json")),
-                &serialized_args,
-            )
-            .expect("Failed to write rustc args to file");
+            let out_path = args_dir.join(format!("{crate_name}.{suffix}.json"));
+            writeln!(file, "[rustc-wrapper] writing {}", out_path.display());
+            std::fs::write(&out_path, &serialized_args)
+                .expect("Failed to write rustc args to file");
         }
     }
 

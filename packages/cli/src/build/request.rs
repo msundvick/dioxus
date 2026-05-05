@@ -1235,6 +1235,11 @@ impl BuildRequest {
 
         let mut cmd = self.build_command(&ctx.mode)?;
         tracing::debug!(dx_src = ?TraceSrc::Build, "Executing cargo for {} using {}", self.bundle, self.triple);
+        tracing::info!("[spawn-cmd] program={:?}", cmd.as_std().get_program());
+        tracing::info!("[spawn-cmd] args={:?}", cmd.as_std().get_args().collect::<Vec<_>>());
+        tracing::info!("[spawn-cmd] cwd={:?}", cmd.as_std().get_current_dir());
+        let env_str: Vec<_> = cmd.as_std().get_envs().map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default())).collect();
+        tracing::info!("[spawn-cmd] env_total={} longest_env_entry={}", env_str.len(), env_str.iter().map(|s| s.len()).max().unwrap_or(0));
 
         let mut child = cmd
             .stdout(Stdio::piped())
@@ -1405,6 +1410,17 @@ impl BuildRequest {
                 .lines()
                 .map(|s| s.to_string())
                 .collect();
+            tracing::info!(
+                "[bisect 1] read link_args_file into tip_args: {} args (key={:?})",
+                tip_args.link_args.len(),
+                tip_bin_key,
+            );
+        } else {
+            tracing::info!(
+                "[bisect 1] tip_bin_key={:?} NOT found in workspace_rustc_args (keys={:?})",
+                tip_bin_key,
+                workspace_rustc_args.keys().collect::<Vec<_>>(),
+            );
         }
 
         let exe = output_location.context("Cargo build failed - no output location. Toggle tracing mode (press `t`) for more information.")?;
@@ -1413,14 +1429,15 @@ impl BuildRequest {
         if matches!(ctx.mode, BuildMode::Fat) {
             ctx.status_starting_link();
             let link_start = SystemTime::now();
-            self.run_fat_link(
-                &exe,
-                &workspace_rustc_args
-                    .get(&tip_bin_key)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-            .await?;
+            let fat_link_args = workspace_rustc_args
+                .get(&tip_bin_key)
+                .cloned()
+                .unwrap_or_default();
+            tracing::info!(
+                "[bisect 2] passing to run_fat_link: {} link_args",
+                fat_link_args.link_args.len(),
+            );
+            self.run_fat_link(&exe, &fat_link_args).await?;
             tracing::debug!(
                 "Fat linking completed in {}us",
                 SystemTime::now()
@@ -2882,6 +2899,7 @@ impl BuildRequest {
     /// todo: we should try and make this faster with memmapping
     pub(crate) async fn run_fat_link(&self, exe: &Path, rustc_args: &RustcArgs) -> Result<()> {
         // Filter out the rlib files from the arguments
+        tracing::info!("Raw link args: {:?}", rustc_args.link_args);
         let rlibs = rustc_args
             .link_args
             .iter()
@@ -3024,6 +3042,7 @@ impl BuildRequest {
         //
         // We also need to insert the -force_load flag to force the linker to load the archive
         let mut args: Vec<_> = rustc_args.link_args.clone();
+        tracing::info!("[bisect 3] run_fat_link entry: {} args cloned from rustc_args.link_args", args.len());
         if let Some(last_object) = args.iter().rposition(|arg| arg.ends_with(".o")) {
             if archive_has_contents {
                 match self.linker_flavor() {
@@ -3069,6 +3088,8 @@ impl BuildRequest {
                 };
             }
         }
+
+        tracing::info!("[bisect 4] after archive insertion + rlib retain: {} args", args.len());
 
         // Add custom args to the linkers.
         // cdylib targets have no `main`; exporting it causes a linker error, so those flags are
@@ -3238,7 +3259,9 @@ impl BuildRequest {
         // - windows requires the pdb crate and pdb files
         // - nix requires the object crate
         let mut jump_table = match triple.operating_system {
-            OperatingSystem::Windows => create_windows_jump_table(patch, triple, cache, self.is_cdylib())?,
+            OperatingSystem::Windows => {
+                create_windows_jump_table(patch, triple, cache, self.is_cdylib())?
+            }
             _ if triple.architecture == Architecture::Wasm32 => {
                 create_wasm_jump_table(patch, cache)?
             }
@@ -3386,7 +3409,24 @@ impl BuildRequest {
                 let mut cmd = Command::new("rustc");
                 cmd.current_dir(self.workspace_dir());
                 cmd.env_clear();
-                cmd.args(rustc_args.args[1..].iter());
+
+                // On Windows the command line limit is ~32K chars. The cxxbridge build script
+                // emits hundreds of /EXPORT: flags which easily exceeds that. Write all args
+                // to a response file and pass @path so the OS never sees the full command line.
+                if cfg!(target_os = "windows") {
+                    // Each line in a rustc @response-file is already one argument, so no
+                    // quoting is needed — spaces within an arg (e.g. cfg values) are fine.
+                    let args_content = rustc_args.args[1..].join("\n");
+                    let rsp_file = self
+                        .rustc_wrapper_args_dir()
+                        .join(format!("{}-thin.rsp", self.tip_crate_name()));
+                    std::fs::write(&rsp_file, &args_content)
+                        .context("Failed to write rustc response file")?;
+                    cmd.arg(format!("@{}", rsp_file.display()));
+                } else {
+                    cmd.args(rustc_args.args[1..].iter());
+                }
+
                 cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
                 cmd.env_remove("RUSTC_WRAPPER");
                 cmd.env_remove(DX_RUSTC_WRAPPER_ENV_VAR);

@@ -1,6 +1,7 @@
 use crate::Result;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::{borrow::Cow, ffi::OsString, path::PathBuf, process::ExitCode};
 use target_lexicon::Triple;
 
@@ -128,6 +129,13 @@ impl LinkAction {
     /// it both for determining if we should act as a linker and the for the file name itself.
     fn run_link_inner(self) -> Result<()> {
         let args: Vec<_> = std::env::args().collect();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true) // Open the file in append mode
+            .create(true) // Create the file if it doesn't exist
+            .open("link_args.log")
+            .unwrap();
+        writeln!(file, "Arguments are: {}", args.join(" ")).unwrap();
+
         if args.is_empty() {
             return Ok(());
         }
@@ -141,12 +149,6 @@ impl LinkAction {
         // Write the linker args to a file for the main process to read
         // todo: we might need to encode these as escaped shell words in case newlines are passed
         std::fs::write(&self.link_args_file, args.join("\n"))?;
-
-        // DIAGNOSTIC: dump every saved arg so we can see what the wrapper captured on Windows
-        eprintln!("[dx-link] saved {} args to {:?}", args.len(), self.link_args_file);
-        for arg in &args {
-            eprintln!("[dx-link]   {arg}");
-        }
 
         // If there's a linker specified, we use that. Otherwise, we write a dummy object file to satisfy
         // any post-processing steps that rustc does.
