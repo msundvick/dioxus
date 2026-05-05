@@ -1347,6 +1347,7 @@ impl BuildRequest {
                             None
                         }
                     });
+                    tracing::info!("[cdylib-artifact] output_location={:?}", output_location);
                 }
                 // todo: this can occasionally swallow errors, so we should figure out what exactly is going wrong
                 //       since that is a really bad user experience.
@@ -2553,7 +2554,9 @@ impl BuildRequest {
             for arg in &args.link_args {
                 if arg.ends_with(".dylib") || arg.ends_with(".so") {
                     let path = PathBuf::from(arg);
-                    dylibs.push(self.frameworks_folder().join(path.file_name().unwrap()));
+                    let frameworks_path = self.frameworks_folder().join(path.file_name().unwrap());
+                    tracing::info!("[dylib-resolve] link_arg={:?} => frameworks_path={:?} exists={}", arg, frameworks_path, frameworks_path.exists());
+                    dylibs.push(frameworks_path);
                 }
             }
         }
