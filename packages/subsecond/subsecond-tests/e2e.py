@@ -249,6 +249,36 @@ class EditContext:
         self._originals.clear()
 
 
+# ── cxx bridge symbol extraction ──────────────────────────────────────────────
+
+
+async def extract_cxx_bridge_symbols(package: str) -> list[str]:
+    """
+    Run `cargo expand --package <package>` and return every export_name value
+    whose name contains 'cxxbridge'.  These are the C-ABI shims that cxx emits
+    for extern "Rust" functions and that must be present in the built dylib.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "cargo",
+        "expand",
+        "--package",
+        package,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(WORKSPACE_ROOT),
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode(errors="replace").strip()
+        print(
+            f"  {_c(YELLOW, 'warning')}: cargo expand failed for {package!r} "
+            f"(is cargo-expand installed?): {err[:200]}"
+        )
+        return []
+    text = stdout.decode(errors="replace")
+    return re.findall(r'export_name\s*=\s*"([^"]*cxxbridge[^"]*)"', text)
+
+
 # ── Readiness polling ──────────────────────────────────────────────────────────
 
 async def wait_for_file(path: Path, timeout: float) -> None:
@@ -285,13 +315,15 @@ class TestSpec:
     host_pkg: Optional[str] = None     # if set, run this as a separate host process
     host_env: dict = field(default_factory=dict)
     description: str = ""
+    # If set, cargo expand this package and pass extracted cxx bridge symbol names
+    # to the host via CXX_BRIDGE_SYMBOLS so it can verify their presence in the dylib.
+    cxx_symbols_pkg: Optional[str] = None
 
 
 # ── Test definitions ───────────────────────────────────────────────────────────
 
 
 TESTS: list[TestSpec] = [
-
     TestSpec(
         name="cdylib-basic",
         description="Basic cdylib hot patch: get_version() return value changes",
@@ -308,7 +340,6 @@ TESTS: list[TestSpec] = [
         ],
         patched_pattern=r"version = 99",
     ),
-
     TestSpec(
         name="cdylib-tls",
         description="TLS preservation: counter must not reset after patch",
@@ -327,7 +358,6 @@ TESTS: list[TestSpec] = [
         ],
         patched_pattern=r"tick v2: counter = \d+",
     ),
-
     TestSpec(
         name="cdylib-autoconnect",
         description="Auto-init via #[ctor]: no explicit on_load() call needed",
@@ -337,14 +367,15 @@ TESTS: list[TestSpec] = [
         initial_pattern=r"compute\(\) = 5",
         edits=[
             FileEdit(
-                path=Path("packages/subsecond/subsecond-tests/cdylib-autoconnect/src/lib.rs"),
+                path=Path(
+                    "packages/subsecond/subsecond-tests/cdylib-autoconnect/src/lib.rs"
+                ),
                 old="dioxus_devtools::subsecond::call(|| 5)",
                 new="dioxus_devtools::subsecond::call(|| 99)",
             )
         ],
         patched_pattern=r"compute\(\) = 99",
     ),
-
     TestSpec(
         name="cdylib-cxx",
         description="cxx cdylib + compile_as_shared_lib: hot patch through cxx bridge",
@@ -360,8 +391,8 @@ TESTS: list[TestSpec] = [
             )
         ],
         patched_pattern=r"compute\(21\) = 63",
+        cxx_symbols_pkg="cdylib-cxx",
     ),
-
     TestSpec(
         name="bin-basic",
         description="Single-crate binary: patch propagates without restart",
@@ -377,7 +408,6 @@ TESTS: list[TestSpec] = [
         ],
         patched_pattern=r"Captured state3 - x: 10",
     ),
-
     TestSpec(
         name="bin-multi-crate",
         description="Multi-crate binary: patch main crate call site",
@@ -386,14 +416,15 @@ TESTS: list[TestSpec] = [
         initial_pattern=r"compute\(21\) = 66",
         edits=[
             FileEdit(
-                path=Path("packages/subsecond/subsecond-tests/bin-multi-crate/src/main.rs"),
+                path=Path(
+                    "packages/subsecond/subsecond-tests/bin-multi-crate/src/main.rs"
+                ),
                 old="compute(22)",
                 new="compute(99)",
             )
         ],
         patched_pattern=r"compute\(21\) = 297",
     ),
-
     TestSpec(
         name="bin-multi-crate-dep",
         description="Multi-crate binary: patch dependency crate",
@@ -409,7 +440,6 @@ TESTS: list[TestSpec] = [
         ],
         patched_pattern=r"compute\(21\) = 88",
     ),
-
     TestSpec(
         name="bin-transitive-dep",
         description="Transitive dependency: patch nested dep not in direct Cargo.toml",
@@ -418,7 +448,9 @@ TESTS: list[TestSpec] = [
         initial_pattern=r"quadruple\(7\) = 28",
         edits=[
             FileEdit(
-                path=Path("packages/subsecond/subsecond-tests/bin-dep-nested/src/lib.rs"),
+                path=Path(
+                    "packages/subsecond/subsecond-tests/bin-dep-nested/src/lib.rs"
+                ),
                 old="x * 2",
                 new="x * 3",
             )
@@ -498,11 +530,29 @@ async def run_test(
 
         # ── 3. Start host (cdylib tests only) ─────────────────────────────────
         if spec.host_pkg:
+            cxx_symbols: list[str] = []
+            if spec.cxx_symbols_pkg:
+                print(f"  Extracting cxx bridge symbols from {spec.cxx_symbols_pkg!r}…")
+                cxx_symbols = await extract_cxx_bridge_symbols(spec.cxx_symbols_pkg)
+                if cxx_symbols:
+                    print(
+                        f"  Found {len(cxx_symbols)} cxx bridge symbol(s): "
+                        f"{', '.join(cxx_symbols)}"
+                    )
+                else:
+                    print(
+                        f"  {_c(YELLOW, 'warning')}: no cxx bridge symbols found "
+                        f"(cargo-expand may not be installed or the bridge is empty)"
+                    )
+
             host_env = {
                 **spec.host_env,
                 "CDYLIB_PATH": cdylib_path,
                 "DIOXUS_DEVSERVER_IP": devserver_ip,
                 "DIOXUS_DEVSERVER_PORT": devserver_port,
+                **(
+                    {"CXX_BRIDGE_SYMBOLS": ",".join(cxx_symbols)} if cxx_symbols else {}
+                ),
             }
             host_args = ["cargo", "run", "--package", spec.host_pkg]
             host = await ManagedProcess.start(

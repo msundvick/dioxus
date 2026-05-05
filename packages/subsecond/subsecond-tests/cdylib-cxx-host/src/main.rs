@@ -32,6 +32,15 @@ fn main() {
         unsafe { lib.get(b"on_load") }.expect("on_load not found");
     unsafe { on_load() };
 
+    // Verify any cxx bridge symbols extracted from cargo expand are present.
+    if let Ok(symbols_env) = std::env::var("CXX_BRIDGE_SYMBOLS") {
+        for sym in symbols_env.split(',').filter(|s| !s.is_empty()) {
+            unsafe { lib.get::<*const ()>(sym.as_bytes()) }
+                .unwrap_or_else(|e| panic!("cxx bridge symbol {sym:?} not found in dylib: {e}"));
+            println!("cxx bridge symbol present: {sym}");
+        }
+    }
+
     let run_compute: libloading::Symbol<unsafe extern "C" fn(i32) -> i32> =
         unsafe { lib.get(b"run_compute") }.expect("run_compute not found");
 

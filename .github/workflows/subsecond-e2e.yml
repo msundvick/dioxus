@@ -62,6 +62,9 @@ jobs:
         run: echo "DX=${{ github.workspace }}/target/debug/dx.exe" >> $GITHUB_ENV
         shell: bash
 
+      - name: Install cargo-expand
+        run: cargo install cargo-expand --locked
+
       - name: Run subsecond e2e tests
         run: >
           python packages/subsecond/subsecond-tests/e2e.py
