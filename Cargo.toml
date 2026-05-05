@@ -93,6 +93,8 @@ members = [
     "packages/subsecond/subsecond-tests/cdylib-basic-host",
     "packages/subsecond/subsecond-tests/cdylib-tls",
     "packages/subsecond/subsecond-tests/cdylib-tls-host",
+    "packages/subsecond/subsecond-tests/cdylib-tls-implicit",
+    "packages/subsecond/subsecond-tests/cdylib-tls-implicit-host",
     "packages/subsecond/subsecond-tests/cdylib-autoconnect",
     "packages/subsecond/subsecond-tests/cdylib-autoconnect-host",
     "packages/subsecond/subsecond-tests/cdylib-cxx",

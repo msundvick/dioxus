@@ -22,11 +22,15 @@ pub extern "C" fn on_load() {
 /// was patched. The counter value must continue increasing, not reset to 0 or 1.
 #[no_mangle]
 pub extern "C" fn tick() {
+    println!("[tick] entered tick()");
     dioxus_devtools::subsecond::call(|| {
+        println!("[tick] inside call closure, before COUNTER.with");
         COUNTER.with(|c| {
+            println!("[tick] inside COUNTER.with");
             let v = c.get() + 3;
             c.set(v);
             println!("tick v1: counter = {v}");
         });
     });
+    println!("[tick] tick() returning");
 }

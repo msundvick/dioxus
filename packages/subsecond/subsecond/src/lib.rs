@@ -523,8 +523,9 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
 
         #[cfg(not(target_os = "android"))]
         let lib = Box::leak(Box::new({
+            println!("[apply_patch] loading lib: {:?}", &table.lib);
             match libloading::Library::new(&table.lib) {
-                Ok(lib) => lib,
+                Ok(lib) => { println!("[apply_patch] lib loaded ok"); lib }
                 Err(err) => return Err(PatchError::Dlopen(err.to_string())),
             }
         }));
@@ -532,6 +533,7 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
         // Use the `main` symbol as a sentinel for the current executable. This is basically a
         // cross-platform version of `__mh_execute_header` on macOS that we can use to base the executable.
         let old_offset = aslr_reference() - table.aslr_reference as usize;
+        println!("[apply_patch] old_offset={:#x}", old_offset);
 
         // Use the sentinel symbol to locate the patch dylib's base. We prefer
         // `__SUBSECOND_ASLR_REFERENCE` (exported by subsecond itself, works for both bin and
@@ -551,6 +553,7 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
                 .unwrap();
             sentinel_ptr.wrapping_byte_sub(table.new_base_address as usize) as usize
         };
+        println!("[apply_patch] new_offset={:#x} new_base_address={:#x}", new_offset, table.new_base_address);
 
         // Modify the jump table to be relative to the base address of the loaded library
         table.map = table
@@ -564,7 +567,9 @@ pub unsafe fn apply_patch(mut table: JumpTable) -> Result<(), PatchError> {
             })
             .collect();
 
+        println!("[apply_patch] calling commit_patch with {} entries", table.map.len());
         commit_patch(table);
+        println!("[apply_patch] commit_patch done");
     };
 
     // On wasm, we need to download the module, compile it, and then run it.

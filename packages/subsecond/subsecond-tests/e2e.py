@@ -359,6 +359,22 @@ TESTS: list[TestSpec] = [
         patched_pattern=r"tick v2: counter = \d+",
     ),
     TestSpec(
+        name="cdylib-tls-implicit",
+        description="Implicit TLS (through rand dep): hot patch must not crash",
+        devserver_pkg="cdylib-tls-implicit",
+        devserver_flags=["--lib"],
+        host_pkg="cdylib-tls-implicit-host",
+        initial_pattern=r"tick v1: random = \d+",
+        edits=[
+            FileEdit(
+                path=Path("packages/subsecond/subsecond-tests/cdylib-tls-implicit/src/lib.rs"),
+                old='"tick v1: random = {n}"',
+                new='"tick v2: random = {n}"',
+            )
+        ],
+        patched_pattern=r"tick v2: random = \d+",
+    ),
+    TestSpec(
         name="cdylib-autoconnect",
         description="Auto-init via #[ctor]: no explicit on_load() call needed",
         devserver_pkg="cdylib-autoconnect",

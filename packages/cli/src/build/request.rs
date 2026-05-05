@@ -2177,9 +2177,12 @@ impl BuildRequest {
             // todo - how do we handle windows dlls? we don't want to bundle the system dlls
             // for now, we don't do anything with dlls, and only use .dylibs and .so files
 
-            // Write dylibs and dlls to the frameworks folder
-            if arg.ends_with(".dylib") | arg.ends_with(".so") {
-                let from = PathBuf::from(arg);
+            // Write dylibs and dlls to the frameworks folder.
+            // Require an absolute path so linker flags like
+            // `-Wl,-install_name,@rpath/libfoo.dylib` are not mistaken for
+            // file inputs (they end with .dylib but are not paths).
+            let from = PathBuf::from(arg);
+            if (arg.ends_with(".dylib") || arg.ends_with(".so")) && from.is_absolute() {
                 let to = framework_dir.join(from.file_name().unwrap());
                 _ = std::fs::remove_file(&to);
 
@@ -2551,9 +2554,11 @@ impl BuildRequest {
 
             // Add the dylibs/sos to the linker args
             // Make sure to use the one in the bundle, not the ones in the target dir or system.
+            // Require absolute path: flags like `-Wl,-install_name,@rpath/libfoo.dylib`
+            // end with .dylib but are not file inputs.
             for arg in &args.link_args {
-                if arg.ends_with(".dylib") || arg.ends_with(".so") {
-                    let path = PathBuf::from(arg);
+                let path = PathBuf::from(arg);
+                if (arg.ends_with(".dylib") || arg.ends_with(".so")) && path.is_absolute() {
                     let frameworks_path = self.frameworks_folder().join(path.file_name().unwrap());
                     tracing::info!("[dylib-resolve] link_arg={:?} => frameworks_path={:?} exists={}", arg, frameworks_path, frameworks_path.exists());
                     dylibs.push(frameworks_path);
