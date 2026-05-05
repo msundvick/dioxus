@@ -98,6 +98,7 @@ Failed to generate fat binary: rust-lld: error: undefined symbol: main
 ```
 
 **What we know:**
+
 - The initial cdylib build succeeds (devserver reaches "Serving your app" state).
 - The failure occurs when `run_fat_link()` generates the patch dylib.
 - The MSVC CRT startup object `msvcrt.lib(exe_main.obj)` is being pulled in, which only
@@ -114,6 +115,7 @@ Failed to generate fat binary: rust-lld: error: undefined symbol: main
   an EXE rather than a DLL.
 
 **Open questions:**
+
 1. Does `link_args_file()` (written by the rustc wrapper) actually contain `/DLL` for
    cdylib targets on Windows?
 2. Is there code that strips `/DLL` from `args` before the linker is invoked?
@@ -136,3 +138,65 @@ assumption is wrong.
 The `bin-basic` source was changed from a simple "Hello from bin-basic v1" loop to a
 "Closure Struct Layouts" experiment that prints `Captured state2 - x: 10, y: 20 30`.
 The e2e test spec now matches the actual source.
+
+## Mac: cdylib-cxx fails with no such file or directory (fixed)
+
+**Status: fixed** in `packages/cli/src/build/request.rs` (`write_frameworks` and thin-link
+dylib-resolve loop).
+
+**Root cause:** Both `write_frameworks` and the thin-link dylib-resolve loop scanned
+`link_args` for anything ending in `.dylib` to identify dylib files to symlink into
+`Contents/Frameworks/`. The `cxx` build script emits
+`-Wl,-install_name,@rpath/libcdylib_cxx.dylib` to set the dylib's install name — a linker
+*flag* that happens to end in `.dylib`. The code treated it as a file path, computed
+`file_name() == "libcdylib_cxx.dylib"`, removed the correct symlink created from the real
+output path (which was processed first), and replaced it with a dangling symlink pointing to
+the literal string `-Wl,-install_name,@rpath/libcdylib_cxx.dylib`. The thin-link step then
+tried to pass that non-existent path to clang and failed.
+
+**Fix:** Both sites now require the arg to be an absolute path (`PathBuf::from(arg).is_absolute()`)
+before treating it as a dylib file. Linker flags like `-Wl,...` are never absolute paths.
+
+---
+
+## Windows: cdylib-tls fails — implicit TLS in patch DLL is uninitialized for pre-existing threads
+
+**Status: known limitation** — the `cdylib-tls` test is expected to fail on Windows.
+
+**Failing test:** `cdylib-tls`
+
+**Symptom:**
+
+```
+STATUS_ACCESS_VIOLATION
+```
+
+The host process crashes after the patch applies, inside the patched `tick()` function at the
+`COUNTER.with(...)` call. Bisection via checkpoint `println!` confirmed the crash occurs
+after `commit_patch` succeeds, specifically when the patched code accesses the
+`COUNTER` thread-local for the first time.
+
+**Root cause:** Windows does not initialize implicit PE TLS (`thread_local!` / `.tls` section)
+for threads that already exist when a DLL is loaded via `LoadLibrary`. On `DLL_PROCESS_ATTACH`
+only the loading thread is initialized; `DLL_THREAD_ATTACH` is not retroactively fired for
+pre-existing threads. The patch DLL contains its own TLS section for `COUNTER`. The loading
+thread is the WebSocket/devserver thread; the main thread calling `tick()` never receives
+`DLL_THREAD_ATTACH` for the patch DLL. When it dereferences the uninitialized TLS slot →
+NULL pointer → `STATUS_ACCESS_VIOLATION`.
+
+**Why `cdylib-tls-implicit` passes:** `rand`'s TLS lives in the *original* DLL (compiled as
+a dependency). The patched `tick()` calls `rand::random()` via the jump table back into the
+original DLL's code, whose TLS was properly initialized for all threads when the original DLL
+was loaded. Only TLS defined directly in the tip crate (the crate being patched) is affected.
+
+**Scope:** TLS in rlib/cdylib dependencies is safe as long as it is not inlined into the
+patch DLL's own TLS section. The limitation applies to `thread_local!` declared directly in
+the hot-patchable crate.
+
+**Permanent fix options:**
+1. Walk all existing threads on `DLL_PROCESS_ATTACH` and manually invoke TLS initializers
+   (requires a custom `DllMain`, not currently possible from safe Rust).
+2. Migrate subsecond's TLS to explicit allocation (`TlsAlloc` / `TlsGetValue`) so
+   initialization is not tied to `DLL_THREAD_ATTACH`.
+3. Document as a known limitation: users must not use `thread_local!` at the top level of a
+   cdylib hotpatch target on Windows.

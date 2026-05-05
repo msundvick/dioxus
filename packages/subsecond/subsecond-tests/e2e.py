@@ -410,6 +410,21 @@ TESTS: list[TestSpec] = [
         cxx_symbols_pkg="cdylib-cxx",
     ),
     TestSpec(
+        name="cross-tls-test",
+        description="Cross-crate TLS: bin hotpatch with TLS in tip crate and rlib deps",
+        devserver_pkg="subsecond-tls-harness",
+        devserver_flags=[],
+        initial_pattern=r"Hello.*123s123123s",
+        edits=[
+            FileEdit(
+                path=Path("packages/subsecond/subsecond-tests/cross-tls-test/src/main.rs"),
+                old='"Hello  123s123123s: {}"',
+                new='"Hello  v2: {}"',
+            )
+        ],
+        patched_pattern=r"Hello.*v2",
+    ),
+    TestSpec(
         name="bin-basic",
         description="Single-crate binary: patch propagates without restart",
         devserver_pkg="bin-basic",
