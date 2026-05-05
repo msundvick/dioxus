@@ -63,7 +63,9 @@ jobs:
         shell: bash
 
       - name: Install cargo-expand
-        run: cargo install cargo-expand --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-expand
 
       - name: Run subsecond e2e tests
         run: >
