@@ -1379,17 +1379,11 @@ impl BuildRequest {
             }
         }
 
-        // DIAGNOSTIC: always-visible dump of what we loaded and what files exist
-        tracing::info!(
+        tracing::trace!(
             "Loaded workspace rustc args from {}: keys={:?}",
             args_dir.display(),
             workspace_rustc_args.keys().collect::<Vec<_>>(),
         );
-        if let Ok(entries) = std::fs::read_dir(&args_dir) {
-            for entry in entries.flatten() {
-                tracing::info!("  rustc_wrapper_args_dir file: {:?}", entry.file_name());
-            }
-        }
 
         // If there's any warnings from the linker, we should print them out
         if let Ok(linker_warnings) = std::fs::read_to_string(self.link_err_file()) {
@@ -1402,28 +1396,16 @@ impl BuildRequest {
             }
         }
 
-        // Read the linker args that the dx linker wrapper captured. These are always written to
-        // link_args.json by the linker wrapper regardless of crate type (bin, cdylib, etc.).
-        // Previously this was attached via the workspace_rustc_args map, but for cdylib targets
-        // the tip crate's JSON is never written to the map (only dependency lib crates are).
+        // Collect the linker args and attach them to the tip crate's entry
         let tip_crate_name = self.tip_crate_name();
         let tip_bin_key = format!("{tip_crate_name}.{}", self.tip_suffix());
-        let fat_link_args = {
-            let link_args = std::fs::read_to_string(self.link_args_file())
+        if let Some(tip_args) = workspace_rustc_args.get_mut(&tip_bin_key) {
+            tip_args.link_args = std::fs::read_to_string(self.link_args_file())
                 .context("Failed to read link args from file")?
                 .lines()
-                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
-                .collect::<Vec<_>>();
-            // Attach the link args to the tip crate's RustcArgs if present (for envs), or use a
-            // default. Only link_args matters for fat linking.
-            let mut args = workspace_rustc_args
-                .get(&tip_bin_key)
-                .cloned()
-                .unwrap_or_default();
-            args.link_args = link_args;
-            args
-        };
+                .collect();
+        }
 
         let exe = output_location.context("Cargo build failed - no output location. Toggle tracing mode (press `t`) for more information.")?;
 
@@ -1431,7 +1413,14 @@ impl BuildRequest {
         if matches!(ctx.mode, BuildMode::Fat) {
             ctx.status_starting_link();
             let link_start = SystemTime::now();
-            self.run_fat_link(&exe, &fat_link_args).await?;
+            self.run_fat_link(
+                &exe,
+                &workspace_rustc_args
+                    .get(&tip_bin_key)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .await?;
             tracing::debug!(
                 "Fat linking completed in {}us",
                 SystemTime::now()
@@ -3189,16 +3178,12 @@ impl BuildRequest {
         }
 
         // Run the linker directly!
-        // If we have captured envs from the rustcwrapper, use them exclusively (env_clear ensures
-        // a clean, reproducible environment). If envs are empty — which happens for cdylib targets
-        // whose JSON was never written to the workspace map — inherit the parent process environment
-        // instead, which already has MSVC/SDK paths set correctly from the original cargo invocation.
-        let mut linker_cmd = Command::new(linker);
-        linker_cmd.args(out_args);
-        if !command_envs.is_empty() {
-            linker_cmd.env_clear().envs(command_envs);
-        }
-        let res = linker_cmd.output().await?;
+        let res = Command::new(linker)
+            .args(out_args)
+            .env_clear()
+            .envs(command_envs)
+            .output()
+            .await?;
 
         if !res.stderr.is_empty() {
             let errs = String::from_utf8_lossy(&res.stderr);

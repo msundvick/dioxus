@@ -127,18 +127,12 @@ impl LinkAction {
     /// The file will be given by the dx-magic-link-arg env var itself, so we use
     /// it both for determining if we should act as a linker and the for the file name itself.
     fn run_link_inner(self) -> Result<()> {
-        let raw_args: Vec<_> = std::env::args().collect();
-        if raw_args.is_empty() {
+        let args: Vec<_> = std::env::args().collect();
+        if args.is_empty() {
             return Ok(());
         }
 
-        // DIAGNOSTIC: show the raw args before any response-file expansion
-        eprintln!("[dx-link] raw argv count (including program name): {}", raw_args.len());
-        for (i, arg) in raw_args.iter().enumerate() {
-            eprintln!("[dx-link]   raw[{i}] = {arg}");
-        }
-
-        let mut args = get_actual_linker_args_excluding_program_name(raw_args);
+        let mut args = get_actual_linker_args_excluding_program_name(args);
 
         if self.triple.environment == target_lexicon::Environment::Android {
             args.retain(|arg| !arg.ends_with(".lib"));
