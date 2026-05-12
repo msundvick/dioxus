@@ -1292,8 +1292,29 @@ impl BuildRequest {
                     //
                     // There are other outputs like depinfo that we might be interested in the future.
                     if let Ok(artifact) = serde_json::from_str::<RustcArtifact>(&line) {
+                        tracing::info!(
+                            "[output-location] RustcArtifact emit={:?} artifact={:?} is_cdylib={}",
+                            artifact.emit,
+                            artifact.artifact,
+                            self.is_cdylib(),
+                        );
                         if artifact.emit == "link" {
-                            output_location = Some(artifact.artifact);
+                            // When crate-type includes both cdylib and rlib, rustc emits a link
+                            // artifact for each. Skip rlib/staticlib artifacts for cdylib targets
+                            // so the rlib path doesn't overwrite the .dll/.so/.dylib we want.
+                            let ext = artifact.artifact.extension();
+                            let is_native_lib = ext == Some("so".as_ref())
+                                || ext == Some("dylib".as_ref())
+                                || ext == Some("dll".as_ref());
+                            tracing::info!(
+                                "[output-location] RustcArtifact link: ext={:?} is_native_lib={} -> {}",
+                                ext,
+                                is_native_lib,
+                                if is_native_lib || !self.is_cdylib() { "accepting" } else { "skipping" },
+                            );
+                            if is_native_lib || !self.is_cdylib() {
+                                output_location = Some(artifact.artifact);
+                            }
                         }
                     }
 
@@ -1328,6 +1349,14 @@ impl BuildRequest {
                         crate_count,
                         artifact.target.name.clone(),
                         artifact.fresh,
+                    );
+                    tracing::info!(
+                        "[output-location] CompilerArtifact target={:?} executable={:?} filenames={:?} is_cdylib={} exe_name={:?}",
+                        artifact.target.name,
+                        artifact.executable,
+                        artifact.filenames,
+                        self.is_cdylib(),
+                        self.executable_name(),
                     );
                     // For bin/example targets, cargo sets `executable`. For cdylib targets
                     // `executable` is None; the shared library path is in `filenames`.
@@ -2947,7 +2976,12 @@ impl BuildRequest {
         // Check if we already have a cached object file
         let out_ar_path = exe.with_file_name(format!("libdeps-{hash_id}.a",));
         let out_rlibs_list = exe.with_file_name(format!("rlibs-{hash_id}.txt"));
-        let mut archive_has_contents = out_ar_path.exists();
+        // An empty ar archive is just the 8-byte magic "!<arch>\n" with no members.
+        // Treat anything that small as a cache miss so we don't pass an empty archive to the linker.
+        let mut archive_has_contents = out_ar_path
+            .metadata()
+            .map(|m| m.len() > 8)
+            .unwrap_or(false);
 
         // Use the rlibs list if it exists
         let mut compiler_rlibs = std::fs::read_to_string(&out_rlibs_list)
@@ -3137,6 +3171,10 @@ impl BuildRequest {
             args.remove(idx);
         }
 
+        // Strip the captured /IMPLIB: so it doesn't land in deps/. We re-add it below next to
+        // the /OUT: path so callers can link against the dll from its output location.
+        args.retain(|arg| !arg.to_ascii_uppercase().starts_with("/IMPLIB:"));
+
         // We want to go through wasm-ld directly, so we need to remove the -flavor flag
         if let Some(flavor_idx) = args.iter().position(|arg| *arg == "-flavor") {
             args.remove(flavor_idx + 1);
@@ -3167,7 +3205,16 @@ impl BuildRequest {
 
         // Set the output file
         match self.triple.operating_system {
-            OperatingSystem::Windows => args.push(format!("/OUT:{}", exe.display())),
+            OperatingSystem::Windows => {
+                args.push(format!("/OUT:{}", exe.display()));
+                // Place the import library next to the DLL so callers can find it without
+                // digging into deps/. E.g. foo.dll → foo.dll.lib in the same directory.
+                let implib = exe.with_file_name(format!(
+                    "{}.lib",
+                    exe.file_name().unwrap_or_default().to_string_lossy()
+                ));
+                args.push(format!("/IMPLIB:{}", implib.display()));
+            }
             _ => args.extend(["-o".to_string(), exe.display().to_string()]),
         }
 

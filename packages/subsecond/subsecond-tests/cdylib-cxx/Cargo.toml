@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cxx = { git = "https://github.com/msundvick/cxx", branch = "bundled-dll" }
@@ -13,3 +13,11 @@ dioxus-devtools = { workspace = true }
 
 [build-dependencies]
 cxx-build = { git = "https://github.com/msundvick/cxx", branch = "bundled-dll" }
+
+
+[profile.dev]
+inherits = "release"
+debug = true
+lto = false
+codegen-units = 256
+strip = false

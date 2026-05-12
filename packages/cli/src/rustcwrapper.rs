@@ -160,7 +160,18 @@ pub fn run_rustc() -> ExitCode {
                     }
                     return content
                         .lines()
-                        .map(|l| l.trim().trim_matches('"').to_string())
+                        .map(|l| {
+                            let l = l.trim();
+                            // Windows argfiles wrap args that contain spaces in "...".
+                            // Only strip the outer quotes when the WHOLE line is wrapped,
+                            // otherwise we'd corrupt args like --cfg=feature="ctor" by
+                            // trimming the trailing " and leaving an unterminated quote.
+                            if l.starts_with('"') && l.ends_with('"') && l.len() >= 2 {
+                                l[1..l.len() - 1].replace("\\\"", "\"")
+                            } else {
+                                l.to_string()
+                            }
+                        })
                         .filter(|l| !l.is_empty())
                         .collect::<Vec<_>>();
                 }

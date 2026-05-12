@@ -45,3 +45,5 @@ bundle/
 
 
 .cargo
+
+*.log
