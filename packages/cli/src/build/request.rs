@@ -2567,6 +2567,7 @@ impl BuildRequest {
         // Android apps can take a long time to open, and a hot patch might've been issued in the interim,
         // making this hotpatch a failure.
         if !self.is_wasm_or_wasi() {
+            let t_stub = std::time::Instant::now();
             let stub_bytes = crate::build::create_undefined_symbol_stub(
                 cache,
                 &object_files,
@@ -2575,6 +2576,7 @@ impl BuildRequest {
                 self.is_cdylib(),
             )
             .expect("failed to resolve patch symbols");
+            tracing::info!("[patch-phase] stub_creation={}ms object_files={}", t_stub.elapsed().as_millis(), object_files.len());
 
             // Currently we're dropping stub.o in the exe dir, but should probably just move to a tempfile?
             let patch_file = self.main_exe().with_file_name("stub.o");
@@ -2633,12 +2635,14 @@ impl BuildRequest {
         //
         // We dump its output directly into the patch exe location which is different than how rustc
         // does it since it uses llvm-objcopy into the `target/debug/` folder.
+        let t_link = std::time::Instant::now();
         let res = Command::new(linker)
             .args(out_args)
             .env_clear()
             .envs(command_envs)
             .output()
             .await?;
+        tracing::info!("[patch-phase] thin_link={}ms", t_link.elapsed().as_millis());
 
         if !res.stderr.is_empty() {
             let errs = String::from_utf8_lossy(&res.stderr);
@@ -3465,13 +3469,33 @@ impl BuildRequest {
                 cmd.current_dir(self.workspace_dir());
                 cmd.env_clear();
 
+                // Stable incremental cache dir for thin builds. The fat build's captured args
+                // may include a -Cincremental= pointing into a temp dir that no longer exists.
+                // Strip any existing incremental flag and add a fresh stable path so rustc
+                // can reuse CGU object files that haven't changed between patches.
+                let thin_incremental_dir = self
+                    .session_cache_dir()
+                    .join("thin_incremental")
+                    .join(self.tip_crate_name());
+                std::fs::create_dir_all(&thin_incremental_dir)
+                    .context("Failed to create thin incremental dir")?;
+
+                let filtered_args: Vec<&str> = rustc_args.args[1..]
+                    .iter()
+                    .filter(|a| !a.starts_with("-Cincremental=") && !a.starts_with("-C incremental="))
+                    .map(|s| s.as_str())
+                    .collect();
+
                 // On Windows the command line limit is ~32K chars. The cxxbridge build script
                 // emits hundreds of /EXPORT: flags which easily exceeds that. Write all args
                 // to a response file and pass @path so the OS never sees the full command line.
                 if cfg!(target_os = "windows") {
-                    // Each line in a rustc @response-file is already one argument, so no
-                    // quoting is needed — spaces within an arg (e.g. cfg values) are fine.
-                    let args_content = rustc_args.args[1..].join("\n");
+                    let mut args_content = filtered_args.join("\n");
+                    args_content.push('\n');
+                    args_content.push_str(&format!(
+                        "-Cincremental={}",
+                        thin_incremental_dir.display()
+                    ));
                     let rsp_file = self
                         .rustc_wrapper_args_dir()
                         .join(format!("{}-thin.rsp", self.tip_crate_name()));
@@ -3479,7 +3503,11 @@ impl BuildRequest {
                         .context("Failed to write rustc response file")?;
                     cmd.arg(format!("@{}", rsp_file.display()));
                 } else {
-                    cmd.args(rustc_args.args[1..].iter());
+                    cmd.args(filtered_args);
+                    cmd.arg(format!(
+                        "-Cincremental={}",
+                        thin_incremental_dir.display()
+                    ));
                 }
 
                 cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
