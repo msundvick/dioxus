@@ -4,21 +4,21 @@
 
 ### Binary targets (`dx serve -p <crate> --hot-patch`)
 
-| Scenario | Linux | macOS | Windows |
-|----------|-------|-------|---------|
-| Single-crate binary | ✅ | ✅ | ✅ |
-| Multi-crate binary (tip + direct deps) | ✅ | ✅ | ✅ |
-| Transitive deps (dep-of-dep) | ✅ | ✅ | ✅ |
-| Thread-local storage in patchable code | ❌ Linker error | ❌ Linker error | ❌ Linker error |
+| Scenario                               | Linux           | macOS | Windows             |
+| -------------------------------------- | --------------- | ----- | ------------------- |
+| Single-crate binary                    | ✅              | ✅    | ✅                  |
+| Multi-crate binary (tip + direct deps) | ✅              | ✅    | ✅                  |
+| Transitive deps (dep-of-dep)           | ✅              | ✅    | ✅                  |
+| Thread-local storage in patchable code | ❌ Linker error | ✅    | ❌ Runtime Segfault |
 
 ### cdylib targets (`dx serve --lib -p <crate> --hot-patch`)
 
-| Scenario | Linux | macOS | Windows |
-|----------|-------|-------|---------|
-| Basic function patching | ✅ | ✅ | ❌ Investigating |
-| Auto-connect via `#[ctor]` | ✅ | ✅ | ❌ Investigating |
-| Thread-local storage in cdylib | ❌ TLS resets | ❌ TLS resets | ❌ TLS resets |
-| cxx bridge (`cdylib-cxx`) | ✅ | ✅ | ❌ Investigating |
+| Scenario                       | Linux         | macOS | Windows             |
+| ------------------------------ | ------------- | ----- | ------------------- |
+| Basic function patching        | ✅            | ✅    | ✅                  |
+| Auto-connect via `#[ctor]`     | ✅            | ✅    | ✅                  |
+| Thread-local storage in cdylib | ❌ TLS resets | ✅    | ❌ Runtime Segfault |
+| cxx bridge (`cdylib-cxx`)      | ✅            | ✅    | ✅                  |
 
 The Windows cdylib failures are tracked in `FAILURES.md` with diagnostic
 instrumentation added to produce ground-truth linker arg dumps in CI.
@@ -30,6 +30,7 @@ instrumentation added to produce ground-truth linker arg dumps in CI.
 ### 1. TLS in binary patches causes linker error
 
 **Symptom:**
+
 ```
 rust-lld: error: relocation R_X86_64_TPOFF32 ... cannot be used with -shared
 ```
@@ -90,12 +91,12 @@ Windows builds `dx` with `-C link-arg=/STACK:8388608` to avoid a stack overflow 
 
 All in `packages/subsecond/subsecond-tests/`.
 
-| Crate | Type | Tests |
-|-------|------|-------|
-| `bin-basic` | bin | Basic single-crate patch |
-| `bin-multi-crate` + `bin-dep` | bin | Direct dependency patch |
-| `bin-transitive-dep` + `bin-dep-middle` + `bin-dep-nested` | bin | Transitive dep patch |
-| `cdylib-basic` + `cdylib-basic-host` | cdylib | Basic function patch |
-| `cdylib-tls` + `cdylib-tls-host` | cdylib | TLS preservation (resets on patch) |
-| `cdylib-autoconnect` + `cdylib-autoconnect-host` | cdylib | Auto-connect via `#[ctor]` |
-| `cdylib-cxx` + `cdylib-cxx-host` | cdylib | cxx bridge + `compile_as_shared_lib` |
+| Crate                                                      | Type   | Tests                                |
+| ---------------------------------------------------------- | ------ | ------------------------------------ |
+| `bin-basic`                                                | bin    | Basic single-crate patch             |
+| `bin-multi-crate` + `bin-dep`                              | bin    | Direct dependency patch              |
+| `bin-transitive-dep` + `bin-dep-middle` + `bin-dep-nested` | bin    | Transitive dep patch                 |
+| `cdylib-basic` + `cdylib-basic-host`                       | cdylib | Basic function patch                 |
+| `cdylib-tls` + `cdylib-tls-host`                           | cdylib | TLS preservation (resets on patch)   |
+| `cdylib-autoconnect` + `cdylib-autoconnect-host`           | cdylib | Auto-connect via `#[ctor]`           |
+| `cdylib-cxx` + `cdylib-cxx-host`                           | cdylib | cxx bridge + `compile_as_shared_lib` |
