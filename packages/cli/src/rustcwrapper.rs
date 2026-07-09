@@ -11,6 +11,12 @@ use std::{
 /// separate file in this directory: `{dir}/{crate_name}.json`.
 pub const DX_RUSTC_WRAPPER_ENV_VAR: &str = "DX_RUSTC";
 
+/// Comma-separated allowlist of crate names (underscored) whose rustc args the
+/// wrapper should capture. dx runs as RUSTC_WRAPPER (all crates, not just
+/// workspace members, so `[patch]`-ed local path deps are seen too); without
+/// this filter every registry dep would write a capture file.
+pub const DX_WRAPPED_CRATES_ENV_VAR: &str = "DX_WRAPPED_CRATES";
+
 /// Is `dx` being used as a rustc wrapper?
 ///
 /// This is primarily used to intercept cargo, enabling fast hot-patching by caching the environment
@@ -194,8 +200,18 @@ pub fn run_rustc() -> ExitCode {
         .skip_while(|arg| *arg != "--crate-name")
         .nth(1);
 
+    // Only capture crates on the allowlist (workspace members + local path deps).
+    // An unset/empty allowlist preserves the old behavior of capturing everything
+    // the wrapper sees.
+    let should_capture = |name: &str| {
+        match std::env::var(DX_WRAPPED_CRATES_ENV_VAR) {
+            Ok(list) if !list.is_empty() => list.split(',').any(|c| c == name),
+            _ => true,
+        }
+    };
+
     if let Some(crate_name) = crate_name {
-        if crate_name != "___" {
+        if crate_name != "___" && should_capture(crate_name) {
             std::fs::create_dir_all(&args_dir)
                 .expect("Failed to create args directory for rustc wrapper");
 

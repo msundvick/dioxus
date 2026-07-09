@@ -1221,7 +1221,15 @@ impl BuildRequest {
 
         // For thin builds, compile workspace dep crates before the tip.
         // This updates dep rlibs on disk so cargo links the tip against fresh code.
+        let t_deps = std::time::Instant::now();
         let object_cache = self.compile_workspace_deps(ctx).await?;
+        if matches!(ctx.mode, BuildMode::Thin { .. }) {
+            tracing::info!(
+                "[patch-phase] deps_compile={}ms",
+                t_deps.elapsed().as_millis()
+            );
+        }
+        let t_tip = std::time::Instant::now();
 
         // Extract the unit count of the crate graph so build_cargo has more accurate data
         // "Thin" builds only build the final exe, so we only need to build one crate
@@ -1391,6 +1399,13 @@ impl BuildRequest {
                 }
                 _ => {}
             }
+        }
+
+        if matches!(ctx.mode, BuildMode::Thin { .. }) {
+            tracing::info!(
+                "[patch-phase] tip_compile={}ms",
+                t_tip.elapsed().as_millis()
+            );
         }
 
         // Load per-crate rustc args from the wrapper directory.
@@ -3317,6 +3332,7 @@ impl BuildRequest {
         // - Wasm requires the walrus crate and actually modifies the patch file
         // - windows requires the pdb crate and pdb files
         // - nix requires the object crate
+        let t_jump = std::time::Instant::now();
         let mut jump_table = match triple.operating_system {
             OperatingSystem::Windows => {
                 create_windows_jump_table(patch, triple, cache, self.is_cdylib())?
@@ -3326,6 +3342,11 @@ impl BuildRequest {
             }
             _ => create_native_jump_table(patch, triple, cache, self.is_cdylib())?,
         };
+        tracing::info!(
+            "[patch-phase] jump_table={}ms entries={}",
+            t_jump.elapsed().as_millis(),
+            jump_table.map.len()
+        );
 
         // root_dir: &Path,
         //     base_path: Option<&str>,
@@ -3532,8 +3553,11 @@ impl BuildRequest {
             // For Base and Fat builds, we use a regular cargo setup, but we intercept rustc for
             // workspace member crates to capture their args/envs for hot-patching.
             //
-            // We use RUSTC_WORKSPACE_WRAPPER which wraps only workspace member crates, letting us
-            // capture per-crate args without interfering with external dependency compilation.
+            // We use RUSTC_WRAPPER (which wraps every rustc invocation, unlike
+            // RUSTC_WORKSPACE_WRAPPER which only wraps workspace members) so that local path
+            // dependencies — e.g. crates pulled in via `[patch]` with a path override — are
+            // captured too and can be hot-patched. The wrapper itself filters what it records
+            // via DX_WRAPPED_CRATES so the hundreds of registry deps don't write capture files.
             //
             // We've also had a number of issues with incorrect canonicalization when passing paths
             // through envs on windows, hence the frequent use of dunce::canonicalize.
@@ -3571,9 +3595,33 @@ impl BuildRequest {
                             .to_string(),
                     );
                     cmd.env(
-                        "RUSTC_WORKSPACE_WRAPPER",
+                        "RUSTC_WRAPPER",
                         Workspace::path_to_dx()?.display().to_string(),
                     );
+
+                    // Tell the wrapper which crates to capture: workspace members
+                    // plus local path deps (e.g. [patch]-ed crates), so those can
+                    // be hot-patched too.
+                    let mut wrapped: Vec<String> = self
+                        .workspace
+                        .krates
+                        .workspace_members()
+                        .filter_map(|node| match node {
+                            krates::Node::Krate { krate, .. } => {
+                                Some(krate.name.replace('-', "_"))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    wrapped.extend(
+                        self.workspace
+                            .local_path_deps()
+                            .into_iter()
+                            .map(|(name, _)| name),
+                    );
+                    wrapped.sort();
+                    wrapped.dedup();
+                    cmd.env(crate::rustcwrapper::DX_WRAPPED_CRATES_ENV_VAR, wrapped.join(","));
                 }
 
                 Ok(cmd)
@@ -6092,30 +6140,17 @@ __wbg_init({{module_or_path: "/{}/{wasm_path}"}}).then((wasm) => {{
     /// Blow away the fingerprint for this package, forcing rustc to recompile it.
     ///
     /// This prevents rustc from using the cached version of the binary, which can cause issues
-    /// Find workspace crates that directly depend on the given crate.
+    /// Find hot-patchable crates that directly depend on the given crate.
     ///
-    /// Returns underscore-normalized crate names of workspace members that have `crate_name`
-    /// as a dependency. Used for cascade detection — when a dep's public symbols change,
-    /// its dependents need recompilation too.
+    /// Returns underscore-normalized crate names of workspace members AND local path
+    /// deps (e.g. [patch]-ed crates) that have `crate_name` as a dependency. Used for
+    /// cascade detection — when a dep's public symbols change, its dependents need
+    /// recompilation too.
     pub(crate) fn workspace_dependents_of(&self, crate_name: &str) -> Vec<String> {
         let krates = &self.workspace.krates;
 
-        // Find the NodeId for the target crate
-        let target_nid = krates.workspace_members().find_map(|member| {
-            if let krates::Node::Krate { id, krate, .. } = member {
-                if krate.name.replace('-', "_") == crate_name {
-                    return krates.nid_for_kid(id);
-                }
-            }
-            None
-        });
-
-        let Some(target_nid) = target_nid else {
-            return Vec::new();
-        };
-
-        // Use krates' direct_dependents to find reverse deps, filter to workspace members
-        let workspace_names: HashSet<String> = krates
+        // All hot-patchable crate names: workspace members + local path deps.
+        let patchable_names: HashSet<String> = krates
             .workspace_members()
             .filter_map(|m| {
                 if let krates::Node::Krate { krate, .. } = m {
@@ -6124,14 +6159,37 @@ __wbg_init({{module_or_path: "/{}/{wasm_path}"}}).then((wasm) => {{
                     None
                 }
             })
+            .chain(
+                self.workspace
+                    .local_path_deps()
+                    .into_iter()
+                    .map(|(name, _)| name),
+            )
             .collect();
 
+        // Find the NodeId for the target crate among all patchable crates
+        let target_nid = if patchable_names.contains(crate_name) {
+            krates.krates().find_map(|krate| {
+                if krate.name.replace('-', "_") == crate_name {
+                    return krates.nid_for_kid(&krates::Kid::from(krate.id.clone()));
+                }
+                None
+            })
+        } else {
+            None
+        };
+
+        let Some(target_nid) = target_nid else {
+            return Vec::new();
+        };
+
+        // Use krates' direct_dependents to find reverse deps, filter to patchable crates
         krates
             .direct_dependents(target_nid)
             .into_iter()
             .filter_map(|dep| {
                 let name = dep.krate.name.replace('-', "_");
-                if workspace_names.contains(&name) {
+                if patchable_names.contains(&name) {
                     Some(name)
                 } else {
                     None
@@ -6262,12 +6320,13 @@ __wbg_init({{module_or_path: "/{}/{wasm_path}"}}).then((wasm) => {{
                 .join(&self.profile)
                 .join(".fingerprint");
 
-            // Bust fingerprints for ALL workspace member crates during Fat builds.
-            // This ensures cargo recompiles them through RUSTC_WORKSPACE_WRAPPER
-            // so we capture their rustc args for later thin builds.
+            // Bust fingerprints for ALL local crates (workspace members + path deps,
+            // i.e. every krate cargo reports without a `source`) during Fat builds.
+            // This ensures cargo recompiles them through the rustc wrapper so we
+            // capture their rustc args for later thin builds.
             let mut busted = HashSet::new();
-            for member in self.workspace.krates.workspace_members() {
-                if let krates::Node::Krate { krate, .. } = member {
+            for krate in self.workspace.krates.krates() {
+                if krate.source.is_none() {
                     busted.insert(krate.name.as_str());
                 }
             }

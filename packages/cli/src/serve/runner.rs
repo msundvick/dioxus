@@ -401,6 +401,19 @@ impl AppServer {
 
             // If it's a rust file, we want to hotreload it using the filemap
             if ext == "rs" {
+                // Rust changes outside the workspace root can still belong to a
+                // hot-patchable local path dep (e.g. a [patch]-ed crate). Those have
+                // no RSX to diff — any change means a patch rebuild.
+                if path.strip_prefix(self.workspace.workspace_root()).is_err() {
+                    if self.file_to_workspace_crate(path).is_some() {
+                        tracing::debug!("Rust change in local path dep: {:?}", path);
+                        needs_full_rebuild = true;
+                    } else {
+                        tracing::debug!("Skipping rust file outside workspace: {:?}", path);
+                    }
+                    continue;
+                }
+
                 // And grabout the contents
                 let Ok(new_contents) = std::fs::read_to_string(path) else {
                     tracing::debug!("Failed to read rust file while hotreloading: {:?}", path);
@@ -1262,12 +1275,19 @@ impl AppServer {
             return vec![tip_name];
         }
 
-        // Build a map of workspace crate names to their krates NodeIds
+        // Build a map of hot-patchable crate names (workspace members + local path
+        // deps — every krate without a cargo `source`) to their krates NodeIds
         let mut name_to_node: HashMap<String, NodeId> = HashMap::new();
-        for member in self.workspace.krates.workspace_members() {
-            if let krates::Node::Krate { id, krate, .. } = member {
+        for krate in self.workspace.krates.krates() {
+            if krate.source.is_none() {
                 let normalized = krate.name.replace('-', "_");
-                name_to_node.insert(normalized, self.workspace.krates.nid_for_kid(id).unwrap());
+                name_to_node.insert(
+                    normalized,
+                    self.workspace
+                        .krates
+                        .nid_for_kid(&krates::Kid::from(krate.id.clone()))
+                        .unwrap(),
+                );
             }
         }
 
@@ -1296,7 +1316,7 @@ impl AppServer {
                     _ => continue,
                 };
 
-                // Only traverse workspace members
+                // Only traverse hot-patchable local crates
                 if !name_to_node.contains_key(&dep_name) {
                     continue;
                 }
@@ -1364,30 +1384,39 @@ impl AppServer {
         crates_with_depth.into_iter().map(|(c, _)| c).collect()
     }
 
-    /// Map a changed file path to the workspace crate it belongs to.
+    /// Map a changed file path to the hot-patchable crate it belongs to.
     ///
     /// Returns the crate name in rustc convention (hyphens → underscores), matching the
     /// `--crate-name` arg used by rustc and the keys in `workspace_rustc_args`.
     ///
-    /// Finds the workspace member whose crate directory is the longest prefix of the file path.
+    /// Considers workspace members AND local path deps (e.g. [patch]-ed crates), and
+    /// picks the crate whose directory is the longest prefix of the file path.
     fn file_to_workspace_crate(&self, file: &Path) -> Option<String> {
         let mut best_match: Option<(String, usize)> = None;
+
+        let mut consider = |name: String, crate_dir: &Path| {
+            if let Ok(relative) = file.strip_prefix(crate_dir) {
+                let depth = relative.components().count();
+                let is_better = best_match
+                    .as_ref()
+                    .is_none_or(|(_, best_depth)| depth < *best_depth);
+                if is_better {
+                    best_match = Some((name, depth));
+                }
+            }
+        };
 
         for member in self.workspace.krates.workspace_members() {
             if let krates::Node::Krate { krate, .. } = member {
                 let Some(crate_dir) = krate.manifest_path.parent() else {
                     continue;
                 };
-                if let Ok(relative) = file.strip_prefix(crate_dir.as_std_path()) {
-                    let depth = relative.components().count();
-                    let is_better = best_match
-                        .as_ref()
-                        .is_none_or(|(_, best_depth)| depth < *best_depth);
-                    if is_better {
-                        best_match = Some((krate.name.replace('-', "_"), depth));
-                    }
-                }
+                consider(krate.name.replace('-', "_"), crate_dir.as_std_path());
             }
+        }
+
+        for (name, crate_dir) in self.workspace.local_path_deps() {
+            consider(name, &crate_dir);
         }
 
         best_match.map(|(name, _)| name)

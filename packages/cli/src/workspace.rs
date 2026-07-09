@@ -518,6 +518,45 @@ impl Workspace {
         self.krates.workspace_root().as_std_path().to_path_buf()
     }
 
+    /// Local path dependencies that are NOT workspace members, as
+    /// `(crate_name_with_underscores, crate_dir)` pairs.
+    ///
+    /// These are typically crates pulled in via `[patch]` with a `path` override
+    /// (or plain path deps outside the workspace). They are treated like
+    /// workspace members for hot-patching: their rustc args are captured during
+    /// the fat build, their directories are watched, and they participate in the
+    /// thin-build cascade.
+    ///
+    /// A crate qualifies when cargo reports no `source` (registry/git crates
+    /// always have one), so its manifest lives on the local filesystem.
+    pub(crate) fn local_path_deps(&self) -> Vec<(String, PathBuf)> {
+        let member_ids: HashSet<_> = self
+            .krates
+            .workspace_members()
+            .filter_map(|node| match node {
+                krates::Node::Krate { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+
+        self.krates
+            .krates()
+            .filter(|krate| !member_ids.contains(&krates::Kid::from(krate.id.clone())))
+            .filter(|krate| krate.source.is_none())
+            .map(|krate| {
+                (
+                    krate.name.replace('-', "_"),
+                    krate
+                        .manifest_path
+                        .parent()
+                        .expect("manifest has a parent dir")
+                        .as_std_path()
+                        .to_path_buf(),
+                )
+            })
+            .collect()
+    }
+
     /// Returns the root of the crate that the command is run from, without calling `cargo metadata`
     ///
     /// If the command is run from the workspace root, this will return the top-level Cargo.toml
