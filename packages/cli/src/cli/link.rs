@@ -1,7 +1,6 @@
 use crate::Result;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::{borrow::Cow, ffi::OsString, path::PathBuf, process::ExitCode};
 use target_lexicon::Triple;
 
@@ -129,13 +128,6 @@ impl LinkAction {
     /// it both for determining if we should act as a linker and the for the file name itself.
     fn run_link_inner(self) -> Result<()> {
         let args: Vec<_> = std::env::args().collect();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true) // Open the file in append mode
-            .create(true) // Create the file if it doesn't exist
-            .open("link_args.log")
-            .unwrap();
-        writeln!(file, "Arguments are: {}", args.join(" ")).unwrap();
-
         if args.is_empty() {
             return Ok(());
         }
